@@ -125,4 +125,3 @@ The `/api/tempo/actuals` route is designed to drop into the PSA project:
 3. Wire the response into the PSA Actuals vs Plan UI
 
 Same stack (Next.js + TypeScript + Tailwind) ensures zero friction on integration.
-# CI/CD test

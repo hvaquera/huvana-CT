@@ -287,7 +287,7 @@ export default function DeliveryTab() {
 
           {/* Expanded content */}
           {isExpanded && !isUpdating && (
-            <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-5">
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-1.5">
                   This Week&apos;s Update
@@ -375,7 +375,7 @@ export default function DeliveryTab() {
                 className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none mb-2 bg-slate-50"
               />
 
-              <div className="flex gap-2 mb-3">
+              <div className="flex flex-col sm:flex-row gap-2 mb-3">
                 <input
                   type="text"
                   value={formMilestone}
@@ -429,7 +429,7 @@ export default function DeliveryTab() {
     <div className="space-y-5">
 
       {/* ── Metric Strip ──────────────────────────────────────── */}
-      <div className="grid grid-cols-5 gap-3">
+      <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 sm:gap-3">
         {[
           { key: 'all' as FilterRAG, value: counts.active, label: 'Active', color: 'text-slate-800', topBorder: 'bg-slate-300' },
           { key: 'green' as FilterRAG, value: counts.green, label: 'Green', color: 'text-emerald-600', topBorder: 'bg-emerald-400' },
@@ -440,29 +440,29 @@ export default function DeliveryTab() {
           <button
             key={key}
             onClick={() => { setFilterRAG(filterRAG === key ? 'all' : key); setFilterOwner('all'); }}
-            className={`relative overflow-hidden rounded-xl border px-4 py-3 text-left transition-all ${
+            className={`relative overflow-hidden rounded-xl border px-3 py-2.5 sm:px-4 sm:py-3 text-left transition-all ${
               filterRAG === key
                 ? 'border-indigo-300 bg-indigo-50 shadow-sm'
                 : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
             }`}
           >
             <div className={`absolute top-0 left-0 right-0 h-[2px] ${topBorder}`} />
-            <div className={`text-2xl font-bold tracking-tight leading-none mb-1 ${color}`}>{value}</div>
-            <div className="text-[11px] text-slate-400 uppercase tracking-wider font-medium">{label}</div>
+            <div className={`text-xl sm:text-2xl font-bold tracking-tight leading-none mb-1 ${color}`}>{value}</div>
+            <div className="text-[10px] sm:text-[11px] text-slate-400 uppercase tracking-wider font-medium">{label}</div>
           </button>
         ))}
       </div>
 
       {/* ── Blockers Banner ───────────────────────────────────── */}
       {projectsWithBlockers.length > 0 && filterRAG !== 'needs-update' && (
-        <div className="rounded-xl border border-slate-200 border-l-[3px] border-l-amber-400 bg-white px-5 py-4">
+        <div className="rounded-xl border border-slate-200 border-l-[3px] border-l-amber-400 bg-white px-3 py-3 sm:px-5 sm:py-4">
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber-600 mb-3">
             <AlertTriangle className="w-3.5 h-3.5" />
             Active Blockers
           </div>
           {projectsWithBlockers.map((p) => (
-            <div key={p.id} className="flex items-start gap-3 py-2 border-b border-slate-100 last:border-b-0">
-              <span className="text-sm font-semibold text-slate-700 min-w-[160px] shrink-0">{p.name}</span>
+            <div key={p.id} className="flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-3 py-2 border-b border-slate-100 last:border-b-0">
+              <span className="text-sm font-semibold text-slate-700 sm:min-w-[160px] shrink-0">{p.name}</span>
               <span className="text-sm text-slate-500 leading-relaxed">{p.blockers}</span>
             </div>
           ))}
@@ -470,7 +470,7 @@ export default function DeliveryTab() {
       )}
 
       {/* ── Filters ───────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 -mx-1 px-1 sm:mx-0 sm:px-0">
         <button
           onClick={() => setFilterOwner('all')}
           className={`px-3 py-1 rounded-full text-xs border transition-all ${
@@ -495,7 +495,7 @@ export default function DeliveryTab() {
           </button>
         ))}
 
-        <div className="relative flex-1 min-w-[180px]">
+        <div className="relative flex-1 min-w-[140px] sm:min-w-[180px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <input
             type="text"
@@ -553,7 +553,7 @@ export default function DeliveryTab() {
 
       {/* ── Project Grid / By PM ──────────────────────────────── */}
       {viewMode === 'grid' ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3">
           {filtered.map(renderCard)}
         </div>
       ) : (
@@ -569,7 +569,7 @@ export default function DeliveryTab() {
                   ))}
                 </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3">
                 {ownerProjects.map(renderCard)}
               </div>
             </div>

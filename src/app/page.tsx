@@ -141,7 +141,7 @@ export default function Dashboard() {
                 value="delivery"
                 className="bg-emerald-600 text-white data-[state=active]:bg-emerald-700 data-[state=active]:text-white"
               >
-                Delivery RYG Tracker
+                Delivery
               </TabsTrigger>
             </TabsList>
           </Tabs>
