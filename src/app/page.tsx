@@ -8,6 +8,7 @@ import UpcomingWork from '@/components/dashboard/UpcomingWork';
 import TaskSearch from '@/components/dashboard/TaskSearch';
 import OpsDetails from '@/components/dashboard/OpsDetails';
 import TimeActualsTab from '@/components/dashboard/TimeActualsTab';
+import DeliveryTab from '@/components/dashboard/DeliveryTab';
 import { REFRESH_INTERVAL_MS, categorizeStatus, STATUS_SORT_ORDER } from '@/lib/constants';
 import type { JiraIssue, FilterValue, EpicProgress } from '@/types';
 
@@ -41,9 +42,10 @@ export default function Dashboard() {
   }, [fetchIssues]);
 
   const isActuals = filter === 'actuals';
+  const isDelivery = filter === 'delivery';
 
   const areaIssues = useMemo(() => {
-    if (filter === 'all' || isActuals) return issues;
+    if (filter === 'all' || isActuals || isDelivery) return issues;
     return issues.filter((i) => i.fields.project.key === filter);
   }, [issues, filter, isActuals]);
 
@@ -135,13 +137,20 @@ export default function Dashboard() {
               >
                 Time Actuals
               </TabsTrigger>
+              <TabsTrigger
+                value="delivery"
+                className="bg-emerald-600 text-white data-[state=active]:bg-emerald-700 data-[state=active]:text-white"
+              >
+                Delivery RYG Tracker
+              </TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
 
         {isActuals && <TimeActualsTab />}
+        {isDelivery && <DeliveryTab />}
 
-        {!isActuals && (
+        {!isActuals && !isDelivery && (
           <div className="space-y-4">
             {/* 1. Overdue */}
             <OverdueBlock tasks={overdueTasks} showArea={showArea} />
