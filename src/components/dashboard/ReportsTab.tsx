@@ -367,7 +367,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
           </ReportCard>
           <ReportCard title="Time Distribution" icon={Grid3X3}>
             <ResponsiveContainer width="100%" height={260}>
-              <PieChart><Pie data={tempoMetrics.projects.slice(0, 8).map((p) => ({ name: resolveAreaName(p.projectKey), value: Math.round(p.hours) }))} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2} dataKey="value" label={({ name, percent }: { name: string; percent?: number }) => `${name}: ${Math.round((percent ?? 0) * 100)}%`}>{tempoMetrics.projects.slice(0, 8).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Pie><Tooltip contentStyle={{ fontSize: 12 }} /></PieChart>
+              <PieChart><Pie data={tempoMetrics.projects.slice(0, 8).map((p) => ({ name: resolveAreaName(p.projectKey), value: Math.round(p.hours) }))} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2} dataKey="value" label={(props: Record<string, unknown>) => `${props.name ?? ''}: ${Math.round(((props.percent as number) ?? 0) * 100)}%`}>{tempoMetrics.projects.slice(0, 8).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Pie><Tooltip contentStyle={{ fontSize: 12 }} /></PieChart>
             </ResponsiveContainer>
           </ReportCard>
         </div>
