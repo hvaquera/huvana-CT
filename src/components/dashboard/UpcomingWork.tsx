@@ -166,20 +166,6 @@ export default function UpcomingWork({ issues, showArea = false }: UpcomingWorkP
               );
             })}
           </div>
-
-          {/* All upcoming tasks listed — only when there are enough to justify it */}
-          {upcoming.length > 5 && (
-            <div className="mt-4 pt-4 border-t border-slate-100">
-              <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                All due in the next {days} days
-              </h4>
-              <div className="space-y-1.5">
-                {upcoming.map((task) => (
-                  <TaskCard key={task.key} issue={task} showArea={showArea} compact />
-                ))}
-              </div>
-            </div>
-          )}
         </>
       )}
     </div>

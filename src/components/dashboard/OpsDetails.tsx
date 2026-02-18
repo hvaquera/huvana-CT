@@ -23,10 +23,16 @@ export default function OpsDetails({ issues, filteredIssues, epicProgress }: Ops
     done: filteredIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'done').length,
   };
 
-  const areaData = Object.entries(AREA_MAP).map(([key, name]) => ({
-    name,
-    value: issues.filter((i) => i.fields.project.key === key).length,
-  }));
+  // Determine which areas are represented in the filtered view
+  const activeAreaKeys = new Set(filteredIssues.map((i) => i.fields.project.key));
+  const isFiltered = activeAreaKeys.size < Object.keys(AREA_MAP).length;
+
+  const areaData = Object.entries(AREA_MAP)
+    .filter(([key]) => activeAreaKeys.has(key))
+    .map(([key, name]) => ({
+      name,
+      value: filteredIssues.filter((i) => i.fields.project.key === key).length,
+    }));
 
   const assigneeChartData = Object.entries(
     filteredIssues.reduce<Record<string, number>>((acc, issue) => {
@@ -39,14 +45,16 @@ export default function OpsDetails({ issues, filteredIssues, epicProgress }: Ops
     .sort((a, b) => b.value - a.value)
     .slice(0, 5);
 
-  const epicSummaryByArea = Object.entries(AREA_MAP).map(([key, name]) => {
-    const areaEpics = Object.entries(epicProgress).filter(([, epic]) => epic.projectKey === key);
-    return {
-      key, name,
-      totalEpics: areaEpics.length,
-      doneEpics: areaEpics.filter(([, e]) => e.done === e.total && e.total > 0).length,
-    };
-  });
+  const epicSummaryByArea = Object.entries(AREA_MAP)
+    .filter(([key]) => activeAreaKeys.has(key))
+    .map(([key, name]) => {
+      const areaEpics = Object.entries(epicProgress).filter(([, epic]) => epic.projectKey === key);
+      return {
+        key, name,
+        totalEpics: areaEpics.length,
+        doneEpics: areaEpics.filter(([, e]) => e.done === e.total && e.total > 0).length,
+      };
+    });
 
   return (
     <div className="mt-6">
@@ -85,23 +93,25 @@ export default function OpsDetails({ issues, filteredIssues, epicProgress }: Ops
             <CardHeader><CardTitle>Progress by Area</CardTitle></CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {Object.entries(AREA_MAP).map(([key, name]) => {
-                  const areaIssues = issues.filter((i) => i.fields.project.key === key);
-                  const done = areaIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'done').length;
-                  const total = areaIssues.length;
-                  const percent = total > 0 ? Math.round((done / total) * 100) : 0;
-                  return (
-                    <div key={key}>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-sm font-medium text-slate-700">{name}</span>
-                        <span className="text-xs text-slate-500">{done}/{total} ({percent}%)</span>
+                {Object.entries(AREA_MAP)
+                  .filter(([key]) => activeAreaKeys.has(key))
+                  .map(([key, name]) => {
+                    const areaIssues = filteredIssues.filter((i) => i.fields.project.key === key);
+                    const done = areaIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'done').length;
+                    const total = areaIssues.length;
+                    const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+                    return (
+                      <div key={key}>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-sm font-medium text-slate-700">{name}</span>
+                          <span className="text-xs text-slate-500">{done}/{total} ({percent}%)</span>
+                        </div>
+                        <div className="w-full bg-slate-100 rounded-full h-2">
+                          <div className="bg-green-500 h-2 rounded-full transition-all" style={{ width: `${percent}%` }} />
+                        </div>
                       </div>
-                      <div className="w-full bg-slate-100 rounded-full h-2">
-                        <div className="bg-green-500 h-2 rounded-full transition-all" style={{ width: `${percent}%` }} />
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
               </div>
             </CardContent>
           </Card>

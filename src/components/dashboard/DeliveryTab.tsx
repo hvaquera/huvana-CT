@@ -59,6 +59,52 @@ function StatusDots({ history }: { history: StatusHistory[] }) {
   );
 }
 
+/** Compute trend from status_history: improving, stable, declining, or unknown. */
+type Trend = 'improving' | 'declining' | 'stable' | 'unknown';
+
+const RAG_SCORE: Record<string, number> = { green: 3, yellow: 2, red: 1 };
+
+function computeTrend(history: StatusHistory[]): Trend {
+  if (history.length < 2) return 'unknown';
+  // Compare last 3 weeks average vs prior 3 weeks average
+  const recent = history.slice(-3);
+  const prior = history.slice(-6, -3);
+  if (prior.length === 0) {
+    // Only have <6 weeks, compare last 2 entries
+    const last = history[history.length - 1];
+    const prev = history[history.length - 2];
+    const lastScore = RAG_SCORE[last.status] ?? 0;
+    const prevScore = RAG_SCORE[prev.status] ?? 0;
+    if (lastScore > prevScore) return 'improving';
+    if (lastScore < prevScore) return 'declining';
+    return 'stable';
+  }
+  const recentAvg = recent.reduce((s, h) => s + (RAG_SCORE[h.status] ?? 0), 0) / recent.length;
+  const priorAvg = prior.reduce((s, h) => s + (RAG_SCORE[h.status] ?? 0), 0) / prior.length;
+  const diff = recentAvg - priorAvg;
+  if (diff > 0.3) return 'improving';
+  if (diff < -0.3) return 'declining';
+  return 'stable';
+}
+
+const TREND_CONFIG = {
+  improving: { arrow: '↑', color: 'text-emerald-500', label: 'Improving' },
+  declining: { arrow: '↓', color: 'text-red-500', label: 'Declining' },
+  stable: { arrow: '→', color: 'text-slate-400', label: 'Stable' },
+  unknown: { arrow: '', color: '', label: '' },
+} as const;
+
+function TrendArrow({ history }: { history: StatusHistory[] }) {
+  const trend = computeTrend(history);
+  if (trend === 'unknown') return null;
+  const cfg = TREND_CONFIG[trend];
+  return (
+    <span className={`text-xs font-bold ${cfg.color}`} title={cfg.label}>
+      {cfg.arrow}
+    </span>
+  );
+}
+
 function getMonday(): string {
   const d = new Date();
   const day = d.getDay();
@@ -119,6 +165,8 @@ export default function DeliveryTab() {
     red: activeProjects.filter((p) => p.current_status === 'red').length,
     blockers: activeProjects.filter((p) => p.blockers).length,
     needsUpdate: activeProjects.filter((p) => !p.current_status || (daysSince(p.last_updated) ?? 999) > 7).length,
+    declining: activeProjects.filter((p) => computeTrend(p.status_history) === 'declining').length,
+    improving: activeProjects.filter((p) => computeTrend(p.status_history) === 'improving').length,
   }), [activeProjects]);
 
   const projectsWithBlockers = useMemo(
@@ -242,7 +290,10 @@ export default function DeliveryTab() {
         <div className="p-4">
           {/* Header */}
           <div className="flex items-start gap-3 mb-3">
-            <span className={`w-[10px] h-[10px] rounded-full mt-[5px] shrink-0 ${RAG_DOT_COLORS[rag ?? 'none']}`} />
+            <div className="flex items-center gap-1 mt-[5px] shrink-0">
+              <span className={`w-[10px] h-[10px] rounded-full ${RAG_DOT_COLORS[rag ?? 'none']}`} />
+              <TrendArrow history={project.status_history} />
+            </div>
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-sm text-slate-900 leading-tight">{project.name}</div>
               {project.client_name && project.client_name !== project.name && (
@@ -429,11 +480,12 @@ export default function DeliveryTab() {
     <div className="space-y-5">
 
       {/* ── Metric Strip ──────────────────────────────────────── */}
-      <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 sm:gap-3">
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
         {[
           { key: 'all' as FilterRAG, value: counts.active, label: 'Active', color: 'text-slate-800', topBorder: 'bg-slate-300' },
           { key: 'green' as FilterRAG, value: counts.green, label: 'Green', color: 'text-emerald-600', topBorder: 'bg-emerald-400' },
           { key: 'yellow' as FilterRAG, value: counts.yellow, label: 'Yellow', color: 'text-amber-600', topBorder: 'bg-amber-400' },
+          { key: 'red' as FilterRAG, value: counts.red, label: 'Red', color: 'text-red-600', topBorder: 'bg-red-400' },
           { key: 'blockers' as FilterRAG, value: counts.blockers, label: 'Blockers', color: 'text-indigo-600', topBorder: 'bg-indigo-400' },
           { key: 'needs-update' as FilterRAG, value: counts.needsUpdate, label: 'Need Update', color: 'text-slate-500', topBorder: 'bg-slate-300' },
         ].map(({ key, value, label, color, topBorder }) => (
@@ -466,6 +518,32 @@ export default function DeliveryTab() {
               <span className="text-sm text-slate-500 leading-relaxed">{p.blockers}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ── Declining Trend Banner ─────────────────────────────── */}
+      {counts.declining > 0 && filterRAG === 'all' && (
+        <div className="rounded-xl border border-slate-200 border-l-[3px] border-l-red-400 bg-white px-3 py-3 sm:px-5 sm:py-4">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-red-500 mb-3">
+            <span className="text-sm font-bold">↓</span>
+            {counts.declining} Project{counts.declining !== 1 ? 's' : ''} Trending Down
+          </div>
+          {activeProjects
+            .filter((p) => computeTrend(p.status_history) === 'declining')
+            .map((p) => (
+              <div key={p.id} className="flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-3 py-2 border-b border-slate-100 last:border-b-0">
+                <div className="flex items-center gap-2 sm:min-w-[160px] shrink-0">
+                  <span className={`w-[8px] h-[8px] rounded-full ${RAG_DOT_COLORS[p.current_status ?? 'none']}`} />
+                  <span className="text-sm font-semibold text-slate-700">{p.name}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <StatusDots history={p.status_history} />
+                  <span className="text-xs text-slate-400">
+                    {p.update_note ? p.update_note.slice(0, 80) + (p.update_note.length > 80 ? '...' : '') : 'No recent update'}
+                  </span>
+                </div>
+              </div>
+            ))}
         </div>
       )}
 

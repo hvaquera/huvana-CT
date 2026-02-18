@@ -51,7 +51,7 @@ export async function GET() {
       // This way one invalid project doesn't kill others
       const fetchPromises = clientProjects.map(async (proj) => {
         const jql = `project = "${proj.key}" AND statusCategory != Done ORDER BY duedate ASC, updated DESC`;
-        const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary,status,assignee,duedate,priority,project,parent,description`;
+        const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary,status,assignee,duedate,priority,project,parent,description,updated,statuscategorychangedate`;
 
         const data = await fetchJson<JiraSearchResponse>(url, {
           Authorization: `Basic ${JIRA_AUTH}`,

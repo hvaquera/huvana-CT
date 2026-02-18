@@ -84,12 +84,11 @@ export function formatDueDate(duedate: string): { label: string; isOverdue: bool
   const diffMs = due.getTime() - today.getTime();
   const daysUntil = Math.round(diffMs / (1000 * 60 * 60 * 24));
 
-  if (daysUntil < 0) return { label: `${Math.abs(daysUntil)}d late`, isOverdue: true, daysUntil };
-  if (daysUntil === 0) return { label: 'Today', isOverdue: false, daysUntil };
-  if (daysUntil === 1) return { label: 'Tomorrow', isOverdue: false, daysUntil };
-  if (daysUntil <= 10) return { label: `In ${daysUntil} days`, isOverdue: false, daysUntil };
+  if (daysUntil < 0) return { label: `${Math.abs(daysUntil)}d overdue`, isOverdue: true, daysUntil };
+  if (daysUntil === 0) return { label: 'Due Today', isOverdue: false, daysUntil };
+  if (daysUntil === 1) return { label: 'Due Tomorrow', isOverdue: false, daysUntil };
   return {
-    label: new Date(duedate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    label: `Due ${new Date(duedate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
     isOverdue: false,
     daysUntil,
   };

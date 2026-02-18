@@ -87,6 +87,17 @@ export default function Dashboard() {
     return progress;
   }, [areaIssues]);
 
+  // CT-5: Stale tasks — In Progress with no Jira activity in 3+ days
+  const staleTasks = useMemo(() => {
+    const STALE_DAYS = 3;
+    return areaIssues.filter((i) => {
+      if (categorizeStatus(i.fields.status.name) !== 'inProgress') return false;
+      if (!i.fields.updated) return false;
+      const daysSince = Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000);
+      return daysSince >= STALE_DAYS;
+    });
+  }, [areaIssues]);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -154,6 +165,18 @@ export default function Dashboard() {
           <div className="space-y-4">
             {/* 1. Overdue */}
             <OverdueBlock tasks={overdueTasks} showArea={showArea} />
+
+            {/* 1b. Stale Tasks Warning */}
+            {staleTasks.length > 0 && (
+              <div className="rounded-xl bg-amber-50/70 border border-amber-200 px-3 py-2.5 md:px-4 md:py-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-amber-500 text-sm font-bold">⚠</span>
+                  <span className="text-xs font-semibold text-amber-700">
+                    {staleTasks.length} &quot;In Progress&quot; task{staleTasks.length !== 1 ? 's' : ''} with no updates in 3+ days
+                  </span>
+                </div>
+              </div>
+            )}
 
             {/* 2. Due in the Next X Days */}
             <UpcomingWork issues={areaIssues} showArea={showArea} />

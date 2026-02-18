@@ -18,6 +18,8 @@ export interface JiraIssue {
     project: { key: string; name: string };
     parent?: { key: string; fields: { summary: string } };
     description?: unknown;
+    updated?: string;
+    statuscategorychangedate?: string;
   };
 }
 

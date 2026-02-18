@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ExternalLink, ChevronDown, ChevronUp } from 'lucide-react';
+import { ExternalLink, ChevronDown, ChevronUp, AlertCircle } from 'lucide-react';
 import { getStatusConfig, categorizeStatus, formatDueDate, JIRA_BROWSE_URL } from '@/lib/constants';
 import type { JiraIssue } from '@/types';
 
@@ -23,6 +23,17 @@ function extractDescription(desc: unknown): string | null {
   }
 }
 
+/** Calculate days since last Jira activity. Returns null if no updated field. */
+function daysSinceUpdate(updated: string | undefined): number | null {
+  if (!updated) return null;
+  const now = new Date();
+  const then = new Date(updated);
+  return Math.floor((now.getTime() - then.getTime()) / 86400000);
+}
+
+const STALE_THRESHOLD_DAYS = 3;
+const STALE_WARNING_DAYS = 5;
+
 interface TaskCardProps {
   issue: JiraIssue;
   showArea?: boolean;
@@ -42,6 +53,11 @@ export default function TaskCard({ issue, showArea = false, compact = false }: T
 
   const isOverdue = dueInfo?.isOverdue && statusCategory !== 'done';
 
+  // CT-5: Task Aging — flag In Progress tasks with no activity
+  const staleDays = daysSinceUpdate(issue.fields.updated);
+  const isStale = statusCategory === 'inProgress' && staleDays !== null && staleDays >= STALE_THRESHOLD_DAYS;
+  const isVeryStale = statusCategory === 'inProgress' && staleDays !== null && staleDays >= STALE_WARNING_DAYS;
+
   const badgeClass: Record<string, string> = {
     inProgress: 'bg-blue-50 text-blue-700',
     todo: 'bg-slate-100 text-slate-600',
@@ -55,6 +71,8 @@ export default function TaskCard({ issue, showArea = false, compact = false }: T
       className={`rounded-xl border transition-all cursor-pointer ${
         isOverdue
           ? 'bg-red-50/80 border-red-200 hover:shadow-md hover:border-red-300'
+          : isVeryStale
+          ? 'bg-amber-50/60 border-amber-200 hover:shadow-md hover:border-amber-300'
           : 'bg-white border-slate-200 hover:shadow-md hover:border-slate-300'
       } ${compact ? 'px-3 py-2.5' : 'px-4 py-3'}`}
       onClick={() => description && setExpanded(!expanded)}
@@ -85,6 +103,18 @@ export default function TaskCard({ issue, showArea = false, compact = false }: T
           {statusConfig.label}
         </span>
 
+        {/* CT-5: Stale badge */}
+        {isStale && (
+          <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md flex items-center gap-0.5 ${
+            isVeryStale
+              ? 'bg-red-50 text-red-600'
+              : 'bg-amber-50 text-amber-600'
+          }`}>
+            <AlertCircle className="h-3 w-3" />
+            No updates in {staleDays}d
+          </span>
+        )}
+
         {/* Assignee */}
         {issue.fields.assignee && (
           <span className="text-xs text-slate-500">{issue.fields.assignee.displayName}</span>
@@ -114,6 +144,11 @@ export default function TaskCard({ issue, showArea = false, compact = false }: T
       {expanded && description && (
         <div className="mt-2.5 pt-2.5 border-t border-slate-100">
           <p className="text-[13px] text-slate-600 leading-relaxed">{description}</p>
+          {staleDays !== null && staleDays >= STALE_THRESHOLD_DAYS && (
+            <p className="text-[11px] text-slate-400 mt-1.5">
+              Last Jira activity: {staleDays} days ago
+            </p>
+          )}
         </div>
       )}
     </div>
