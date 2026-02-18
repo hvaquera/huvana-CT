@@ -25,6 +25,7 @@ interface JiraSearchResponse {
 function categorize(statusName: string): string {
   const s = statusName.toLowerCase();
   if (s.includes('done') || s.includes('closed')) return 'done';
+  if (s.includes('recurring')) return 'recurring';
   if (s.includes('progress') || s.includes('document sent') || s.includes('docusign')) return 'inProgress';
   return 'other';
 }
@@ -63,7 +64,7 @@ async function fetchAllJiraIssues(): Promise<JiraIssue[]> {
   for (const project of OPS_PROJECTS) {
     try {
       const jql = `project = ${project} ORDER BY created DESC`;
-      const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=100&fields=summary,status,assignee,duedate,priority,project,parent,description,updated,statuscategorychangedate`;
+      const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=100&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate`;
       const data = await fetchJson<JiraSearchResponse>(url, {
         Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json',
       });
@@ -86,7 +87,7 @@ async function fetchAllJiraIssues(): Promise<JiraIssue[]> {
     const results = await Promise.allSettled(
       clientProjects.map(async (proj) => {
         const jql = `project = "${proj.key}" AND statusCategory != Done ORDER BY duedate ASC`;
-        const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary,status,assignee,duedate,priority,project,parent,description,updated,statuscategorychangedate`;
+        const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate`;
         return fetchJson<JiraSearchResponse>(url, {
           Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json',
         });
@@ -110,7 +111,8 @@ function buildMondayDigest(issues: JiraIssue[], tempoHours: number | null): obje
   const weekEnd = new Date(today);
   weekEnd.setDate(today.getDate() + (5 - (today.getDay() || 7))); // Friday
 
-  const active = issues.filter((i) => categorize(i.fields.status.name) !== 'done');
+  const active = issues.filter((i) => { const s = categorize(i.fields.status.name); return s !== 'done' && s !== 'recurring'; });
+  const recurringCount = issues.filter((i) => categorize(i.fields.status.name) === 'recurring').length;
 
   // Overdue
   const overdue = active.filter((i) => {
@@ -119,11 +121,17 @@ function buildMondayDigest(issues: JiraIssue[], tempoHours: number | null): obje
     return due < today;
   }).sort((a, b) => new Date(a.fields.duedate!).getTime() - new Date(b.fields.duedate!).getTime());
 
-  // Stale (In Progress, no updates 3+ days)
+  // Stale (In Progress, no updates — epics excluded for ops, 14d threshold for delivery)
+  const opsKeys = new Set<string>(OPS_PROJECTS);
   const stale = active.filter((i) => {
     if (categorize(i.fields.status.name) !== 'inProgress') return false;
     if (!i.fields.updated) return false;
-    return daysBetween(today, new Date(i.fields.updated)) >= 3;
+    const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
+    const isOps = opsKeys.has(i.fields.project.key);
+    const days = daysBetween(today, new Date(i.fields.updated));
+    if (isEpic && isOps) return false;
+    if (isEpic) return days >= 14;
+    return days >= 3;
   }).sort((a, b) => new Date(a.fields.updated!).getTime() - new Date(b.fields.updated!).getTime());
 
   // Due this week
@@ -224,7 +232,7 @@ function buildMondayDigest(issues: JiraIssue[], tempoHours: number | null): obje
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `📊 *Quick Stats:* ${active.length} active tasks  •  ${inProgress} in progress  •  ${overdue.length} overdue  •  ${stale.length} stale  •  ${noDueDate} missing due dates`,
+        text: `📊 *Quick Stats:* ${active.length} active tasks  •  ${inProgress} in progress  •  ${overdue.length} overdue  •  ${stale.length} stale  •  ${recurringCount} recurring  •  ${noDueDate} missing due dates`,
       }],
     },
   );
@@ -238,6 +246,7 @@ function buildFridayDigest(
 ): object[] {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+  const opsKeys = new Set<string>(OPS_PROJECTS);
   const weekStart = new Date(today);
   const day = weekStart.getDay();
   weekStart.setDate(weekStart.getDate() - (day === 0 ? 6 : day - 1));
@@ -268,19 +277,24 @@ function buildFridayDigest(
     completedByArea[area] = (completedByArea[area] ?? 0) + 1;
   });
 
-  // Still overdue
-  const active = issues.filter((i) => categorize(i.fields.status.name) !== 'done');
+  // Still overdue (exclude recurring)
+  const active = issues.filter((i) => { const s = categorize(i.fields.status.name); return s !== 'done' && s !== 'recurring'; });
   const overdue = active.filter((i) => {
     if (!i.fields.duedate) return false;
     const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
     return due < today;
   });
 
-  // Still stale
+  // Still stale (same epic logic: ops epics excluded, delivery epics 14d)
   const stale = active.filter((i) => {
     if (categorize(i.fields.status.name) !== 'inProgress') return false;
     if (!i.fields.updated) return false;
-    return daysBetween(today, new Date(i.fields.updated)) >= 3;
+    const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
+    const isOps = opsKeys.has(i.fields.project.key);
+    const days = daysBetween(today, new Date(i.fields.updated));
+    if (isEpic && isOps) return false;
+    if (isEpic) return days >= 14;
+    return days >= 3;
   });
 
   // Build blocks

@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
-  Loader2, TrendingUp, TrendingDown, Clock, Users, BarChart3,
+  Loader2, TrendingUp, Clock, Users, BarChart3,
   AlertCircle, CheckCircle2, Zap, Grid3X3, ChevronDown, ChevronUp,
+  Eye, Send, AlertOctagon, CalendarOff,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -13,7 +14,7 @@ import type { PieLabelRenderProps } from 'recharts';
 import { categorizeStatus, AREA_MAP, JIRA_BROWSE_URL } from '@/lib/constants';
 import type { JiraIssue, ActualsResponse } from '@/types';
 
-type ReportSection = 'delivery' | 'time' | 'insights';
+type ReportSection = 'delivery' | 'time' | 'insights' | 'monitor';
 type TimePeriod = 'week' | 'month' | 'last-month' | 'all';
 
 const COLORS = ['#4F46E5', '#059669', '#D97706', '#DC2626', '#8B5CF6', '#06B6D4', '#EC4899', '#64748B'];
@@ -38,15 +39,18 @@ function resolveAreaName(projectKey: string): string {
   return (AREA_MAP as Record<string, string>)[projectKey] ?? projectKey;
 }
 
-function ReportCard({ title, subtitle, children, icon: Icon }: { title: string; subtitle?: string; children: React.ReactNode; icon?: React.ComponentType<{ className?: string }>; }) {
+function ReportCard({ title, subtitle, children, icon: Icon, action }: { title: string; subtitle?: string; children: React.ReactNode; icon?: React.ComponentType<{ className?: string }>; action?: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
-        {Icon && <Icon className="w-4 h-4 text-indigo-500" />}
-        <div>
-          <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
-          {subtitle && <p className="text-[11px] text-slate-400 mt-0.5">{subtitle}</p>}
+      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {Icon && <Icon className="w-4 h-4 text-indigo-500" />}
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+            {subtitle && <p className="text-[11px] text-slate-400 mt-0.5">{subtitle}</p>}
+          </div>
         </div>
+        {action && <div>{action}</div>}
       </div>
       <div className="p-4">{children}</div>
     </div>
@@ -89,6 +93,9 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
   const [activeSection, setActiveSection] = useState<ReportSection>('delivery');
   const [deliveryPeriod, setDeliveryPeriod] = useState<TimePeriod>('month');
   const [expandedDeliveryArea, setExpandedDeliveryArea] = useState<string | null>(null);
+  const [hoursPerPersonOpen, setHoursPerPersonOpen] = useState(true);
+  const [personPerfOpen, setPersonPerfOpen] = useState(true);
+  const [copiedNudge, setCopiedNudge] = useState<string | null>(null);
 
   const fetchTempo = useCallback(async () => {
     if (tempoFetched) return;
@@ -131,19 +138,45 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
   // ── Jira Metrics ───────────────────────────────────────────
   const jiraMetrics = useMemo(() => {
     const issues = allIssues;
-    const active = issues.filter((i) => categorizeStatus(i.fields.status.name) !== 'done');
+    const active = issues.filter((i) => { const s = categorizeStatus(i.fields.status.name); return s !== 'done' && s !== 'recurring'; });
+    const recurring = issues.filter((i) => categorizeStatus(i.fields.status.name) === 'recurring');
     const doneInPeriod = filterByPeriod(issues, deliveryPeriod, 'done');
     const inProgress = issues.filter((i) => categorizeStatus(i.fields.status.name) === 'inProgress');
     const withDue = active.filter((i) => i.fields.duedate);
     const overdue = withDue.filter((i) => { const d = new Date(i.fields.duedate!); d.setHours(0,0,0,0); return d < new Date(new Date().setHours(0,0,0,0)); });
-    const stale = inProgress.filter((i) => i.fields.updated && Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000) >= 3);
+
+    // Stale detection: exclude epics from ops areas entirely, give delivery epics 14-day grace
+    const opsProjectKeys = new Set(Object.keys(AREA_MAP));
+    const stale = inProgress.filter((i) => {
+      if (!i.fields.updated) return false;
+      const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
+      const isOpsProject = opsProjectKeys.has(i.fields.project.key);
+      const daysSilent = Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000);
+
+      if (isEpic && isOpsProject) return false; // Ops epics: never stale
+      if (isEpic) return daysSilent >= 14; // Delivery epics: 14-day threshold
+      return daysSilent >= 3; // Regular tasks: 3-day threshold
+    });
+
+    // Recurring breakdown by area and person
+    const recurringByArea: Record<string, number> = {};
+    const recurringByPerson: Record<string, string[]> = {};
+    recurring.forEach((i) => {
+      const area = resolveAreaName(i.fields.project.key);
+      recurringByArea[area] = (recurringByArea[area] ?? 0) + 1;
+      const name = i.fields.assignee?.displayName ?? '';
+      if (name) {
+        if (!recurringByPerson[name]) recurringByPerson[name] = [];
+        if (recurringByPerson[name].length < 5) recurringByPerson[name].push(i.fields.summary.slice(0, 50));
+      }
+    });
 
     const personCompleted: Record<string, number> = {};
-    doneInPeriod.forEach((i) => { const n = i.fields.assignee?.displayName ?? 'Unassigned'; personCompleted[n] = (personCompleted[n] ?? 0) + 1; });
+    doneInPeriod.forEach((i) => { const n = i.fields.assignee?.displayName ?? ''; if (n) personCompleted[n] = (personCompleted[n] ?? 0) + 1; });
     const personStale: Record<string, number> = {};
-    stale.forEach((i) => { const n = i.fields.assignee?.displayName ?? 'Unassigned'; personStale[n] = (personStale[n] ?? 0) + 1; });
+    stale.forEach((i) => { const n = i.fields.assignee?.displayName ?? ''; if (n) personStale[n] = (personStale[n] ?? 0) + 1; });
     const personOverdue: Record<string, number> = {};
-    overdue.forEach((i) => { const n = i.fields.assignee?.displayName ?? 'Unassigned'; personOverdue[n] = (personOverdue[n] ?? 0) + 1; });
+    overdue.forEach((i) => { const n = i.fields.assignee?.displayName ?? ''; if (n) personOverdue[n] = (personOverdue[n] ?? 0) + 1; });
 
     const opsKeys = new Set(Object.keys(AREA_MAP));
     const areaTasks: Record<string, { total: number; done: number; inProgress: number; overdue: number; isDelivery: boolean; projects?: Record<string, { total: number; done: number; overdue: number }> }> = {};
@@ -176,7 +209,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
       }
     });
 
-    return { total: issues.length, doneInPeriod: doneInPeriod.length, overdue: overdue.length, stale: stale.length, personCompleted, personStale, personOverdue, areaTasks, epicMap };
+    return { total: issues.length, active: active.length, doneInPeriod: doneInPeriod.length, overdue: overdue.length, stale: stale.length, recurringCount: recurring.length, recurringByArea, recurringByPerson, personCompleted, personStale, personOverdue, areaTasks, epicMap };
   }, [allIssues, deliveryPeriod, filterByPeriod]);
 
   // ── Tempo Metrics ──────────────────────────────────────────
@@ -186,7 +219,12 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     const hoursDelta = prevTotal > 0 ? Math.round(((tempoData.totalHours - prevTotal) / prevTotal) * 100) : 0;
     const dayOfWeekHours: Record<string, number> = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 };
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    tempoData.people.forEach((p) => p.projects.forEach((pr) => pr.tasks.forEach((t) => t.entries.forEach((e) => { dayOfWeekHours[dayNames[new Date(e.date).getDay()]] += e.hours; }))));
+    tempoData.people.forEach((p) => p.projects.forEach((pr) => pr.tasks.forEach((t) => t.entries.forEach((e) => {
+      // Parse date as local to avoid timezone shift (Tempo dates are YYYY-MM-DD)
+      const parts = e.date.split('-');
+      const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+      dayOfWeekHours[dayNames[d.getDay()]] += e.hours;
+    }))));
     const personUtilization: Record<string, { current: number; previous: number; delta: number }> = {};
     tempoData.people.forEach((p) => { personUtilization[p.name] = { current: p.totalHours, previous: 0, delta: 0 }; });
     if (prevTempoData) prevTempoData.people.forEach((p) => { if (personUtilization[p.name]) personUtilization[p.name].previous = p.totalHours; else personUtilization[p.name] = { current: 0, previous: p.totalHours, delta: 0 }; });
@@ -201,36 +239,175 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
   const crossMetrics = useMemo(() => {
     if (!jiraMetrics || !tempoMetrics) return null;
     const opsKeys = new Set(Object.keys(AREA_MAP));
-    const allocationMatrix: Record<string, Record<string, number>> = {};
-    const allAreas = new Set<string>();
-    tempoMetrics.people.forEach((p) => { if (!allocationMatrix[p.name]) allocationMatrix[p.name] = {}; p.projects.forEach((pr) => { const a = resolveAreaName(pr.projectKey); allAreas.add(a); allocationMatrix[p.name][a] = (allocationMatrix[p.name][a] ?? 0) + pr.hours; }); });
 
+    // Build a set of "active" delivery project keys — projects with Tempo hours this month
+    const activeDeliveryKeys = new Set<string>();
+    tempoMetrics.projects.forEach((p) => {
+      if (!opsKeys.has(p.projectKey) && p.hours > 0) activeDeliveryKeys.add(p.projectKey);
+    });
+
+    // Area Health: only include delivery sub-projects that have hours this month
     const areaHealth: Array<{ area: string; hours: number; total: number; done: number; inProgress: number; overdue: number; throughputRate: number; isDelivery: boolean; subProjects?: Array<{ name: string; hours: number; total: number; done: number; overdue: number }> }> = [];
     Object.entries(jiraMetrics.areaTasks).forEach(([area, data]) => {
       let hours = 0;
-      if (area === 'Delivery') { tempoMetrics.projects.forEach((p) => { if (!opsKeys.has(p.projectKey)) hours += p.hours; }); }
-      else { const mk = Object.entries(AREA_MAP).filter(([, n]) => n === area).map(([k]) => k); tempoMetrics.projects.forEach((p) => { if (mk.includes(p.projectKey)) hours += p.hours; }); }
-      const subProjects = data.isDelivery && data.projects ? Object.entries(data.projects).map(([n, pd]) => {
-        const ph = tempoMetrics.projects.find((tp) => tp.projectName === n || tp.projectKey === n)?.hours ?? 0;
-        return { name: n, hours: Math.round(ph), total: pd.total, done: pd.done, overdue: pd.overdue };
-      }).sort((a, b) => b.total - a.total) : undefined;
-      areaHealth.push({ area, hours, total: data.total, done: data.done, inProgress: data.inProgress, overdue: data.overdue, throughputRate: data.total > 0 ? Math.round((data.done / data.total) * 100) : 0, isDelivery: data.isDelivery, subProjects });
+      if (area === 'Delivery') {
+        tempoMetrics.projects.forEach((p) => { if (!opsKeys.has(p.projectKey) && p.hours > 0) hours += p.hours; });
+      } else {
+        const mk = Object.entries(AREA_MAP).filter(([, n]) => n === area).map(([k]) => k);
+        tempoMetrics.projects.forEach((p) => { if (mk.includes(p.projectKey)) hours += p.hours; });
+      }
+
+      // Filter sub-projects: only show those with hours this month
+      const subProjects = data.isDelivery && data.projects ? Object.entries(data.projects)
+        .map(([n, pd]) => {
+          const tempoProj = tempoMetrics.projects.find((tp) => tp.projectName === n || tp.projectKey === n);
+          return { name: n, hours: Math.round(tempoProj?.hours ?? 0), total: pd.total, done: pd.done, overdue: pd.overdue };
+        })
+        .filter((sp) => sp.hours > 0) // Only active projects with hours this month
+        .sort((a, b) => b.hours - a.hours) : undefined;
+
+      // For delivery, recalculate totals based only on active sub-projects
+      if (area === 'Delivery' && subProjects) {
+        const activeTotals = subProjects.reduce((acc, sp) => ({ total: acc.total + sp.total, done: acc.done + sp.done, overdue: acc.overdue + sp.overdue }), { total: 0, done: 0, overdue: 0 });
+        areaHealth.push({ area, hours, total: activeTotals.total, done: activeTotals.done, inProgress: data.inProgress, overdue: activeTotals.overdue, throughputRate: activeTotals.total > 0 ? Math.round((activeTotals.done / activeTotals.total) * 100) : 0, isDelivery: true, subProjects });
+      } else {
+        areaHealth.push({ area, hours, total: data.total, done: data.done, inProgress: data.inProgress, overdue: data.overdue, throughputRate: data.total > 0 ? Math.round((data.done / data.total) * 100) : 0, isDelivery: data.isDelivery, subProjects });
+      }
     });
 
+    // Person Performance: merge Tempo people + Jira-only people (no cap)
     const personPerformance: Array<{ name: string; hours: number; completed: number; overdue: number; stale: number; areas: string[]; hoursPerTask: number | null }> = [];
+    const seenPeople = new Set<string>();
+
+    // First: people with Tempo hours
     tempoMetrics.people.forEach((p) => {
+      seenPeople.add(p.name);
       const completed = jiraMetrics.personCompleted[p.name] ?? 0;
       const areas = [...new Set(p.projects.map((pr) => resolveAreaName(pr.projectKey)))];
       personPerformance.push({ name: p.name, hours: p.totalHours, completed, overdue: jiraMetrics.personOverdue[p.name] ?? 0, stale: jiraMetrics.personStale[p.name] ?? 0, areas, hoursPerTask: completed > 0 ? Math.round((p.totalHours / completed) * 10) / 10 : null });
     });
+
+    // Second: people with Jira activity but no Tempo hours this month
+    const allJiraPeople = new Set([...Object.keys(jiraMetrics.personCompleted), ...Object.keys(jiraMetrics.personOverdue), ...Object.keys(jiraMetrics.personStale)]);
+    allJiraPeople.forEach((name) => {
+      if (seenPeople.has(name) || !name) return;
+      seenPeople.add(name);
+      const completed = jiraMetrics.personCompleted[name] ?? 0;
+      personPerformance.push({ name, hours: 0, completed, overdue: jiraMetrics.personOverdue[name] ?? 0, stale: jiraMetrics.personStale[name] ?? 0, areas: [], hoursPerTask: null });
+    });
+
     personPerformance.sort((a, b) => b.hours - a.hours);
-    return { allocationMatrix, allAreas: [...allAreas].sort(), areaHealth, personPerformance };
+
+    return { areaHealth, personPerformance, activeDeliveryKeys };
   }, [jiraMetrics, tempoMetrics]);
+
+  // ── Monitor Metrics ─────────────────────────────────────────
+  const monitorMetrics = useMemo(() => {
+    if (!tempoData) return null;
+
+    // Safe date parse: "YYYY-MM-DD" → local Date (avoids UTC timezone shift)
+    const parseLocalDate = (s: string) => { const p = s.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])); };
+
+    // 1. Missing Timesheets: people with 0 hours last week
+    const now = new Date();
+    const lastMonday = new Date(now);
+    const day = lastMonday.getDay();
+    lastMonday.setDate(lastMonday.getDate() - (day === 0 ? 6 : day - 1) - 7);
+    lastMonday.setHours(0, 0, 0, 0);
+    const lastFriday = new Date(lastMonday);
+    lastFriday.setDate(lastMonday.getDate() + 4);
+    lastFriday.setHours(23, 59, 59, 999);
+
+    const lastWeekHours: Record<string, number> = {};
+    const allPeopleSet = new Set<string>();
+    tempoData.people.forEach((p) => {
+      allPeopleSet.add(p.name);
+      let weekHrs = 0;
+      p.projects.forEach((pr) => pr.tasks.forEach((t) => t.entries.forEach((e) => {
+        const d = parseLocalDate(e.date);
+        if (d >= lastMonday && d <= lastFriday) weekHrs += e.hours;
+      })));
+      lastWeekHours[p.name] = weekHrs;
+    });
+    const missingTimesheets = [...allPeopleSet].filter((n) => (lastWeekHours[n] ?? 0) === 0).sort();
+    const lowTimesheets = [...allPeopleSet].filter((n) => (lastWeekHours[n] ?? 0) > 0 && (lastWeekHours[n] ?? 0) < 20).map((n) => ({ name: n, hours: Math.round((lastWeekHours[n] ?? 0) * 10) / 10 })).sort((a, b) => a.hours - b.hours);
+
+    // 2. Unlinked Time: hours without Jira ticket
+    const unlinkedByPerson: Array<{ name: string; hours: number; entries: Array<{ date: string; hours: number; comment: string }> }> = [];
+    tempoData.people.forEach((p) => {
+      const unlinked: Array<{ date: string; hours: number; comment: string }> = [];
+      p.projects.forEach((pr) => {
+        if (pr.projectKey === '(unlinked)' || pr.projectName === '(No Jira Issue)') {
+          pr.tasks.forEach((t) => t.entries.forEach((e) => unlinked.push({ date: e.date, hours: e.hours, comment: e.comment || t.summary })));
+        }
+      });
+      if (unlinked.length > 0) {
+        unlinkedByPerson.push({ name: p.name, hours: Math.round(unlinked.reduce((s, e) => s + e.hours, 0) * 10) / 10, entries: unlinked.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10) });
+      }
+    });
+    unlinkedByPerson.sort((a, b) => b.hours - a.hours);
+
+    // 3. Overtime Watch: days with 9+ hours
+    const overtimeDays: Array<{ name: string; date: string; hours: number }> = [];
+    tempoData.people.forEach((p) => {
+      const dayMap: Record<string, number> = {};
+      p.projects.forEach((pr) => pr.tasks.forEach((t) => t.entries.forEach((e) => { dayMap[e.date] = (dayMap[e.date] ?? 0) + e.hours; })));
+      Object.entries(dayMap).forEach(([date, hrs]) => { if (hrs >= 9) overtimeDays.push({ name: p.name, date, hours: Math.round(hrs * 10) / 10 }); });
+    });
+    overtimeDays.sort((a, b) => b.hours - a.hours);
+
+    // 4. Ghost Tasks: In Progress in Jira with 0 Tempo hours this month
+    const tempoIssueKeys = new Set<string>();
+    tempoData.people.forEach((p) => p.projects.forEach((pr) => pr.tasks.forEach((t) => { if (t.issueKey) tempoIssueKeys.add(t.issueKey); })));
+    const allIssuesCombined = [...(jiraIssues || []), ...(deliveryIssues || [])];
+    const ghostTasks = allIssuesCombined.filter((i) => {
+      if (categorizeStatus(i.fields.status.name) !== 'inProgress') return false;
+      if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
+      const daysSinceUpdate = i.fields.updated ? Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000) : 999;
+      return daysSinceUpdate >= 7 && !tempoIssueKeys.has(i.key);
+    }).map((i) => ({
+      key: i.key, summary: i.fields.summary, assignee: i.fields.assignee?.displayName ?? 'Unassigned',
+      daysSilent: i.fields.updated ? Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000) : 999,
+      project: i.fields.project.name,
+    })).sort((a, b) => b.daysSilent - a.daysSilent);
+
+    // 5. Weekend Warriors: hours on Sat/Sun (safe local parsing)
+    const weekendEntries: Array<{ name: string; date: string; hours: number }> = [];
+    tempoData.people.forEach((p) => {
+      p.projects.forEach((pr) => pr.tasks.forEach((t) => t.entries.forEach((e) => {
+        const d = parseLocalDate(e.date).getDay();
+        if (d === 0 || d === 6) weekendEntries.push({ name: p.name, date: e.date, hours: e.hours });
+      })));
+    });
+    // Aggregate by person
+    const weekendByPerson: Record<string, { hours: number; days: Set<string> }> = {};
+    weekendEntries.forEach((e) => {
+      if (!weekendByPerson[e.name]) weekendByPerson[e.name] = { hours: 0, days: new Set() };
+      weekendByPerson[e.name].hours += e.hours;
+      weekendByPerson[e.name].days.add(e.date);
+    });
+    const weekendWarriors = Object.entries(weekendByPerson).map(([name, d]) => ({ name, hours: Math.round(d.hours * 10) / 10, days: d.days.size })).sort((a, b) => b.hours - a.hours);
+
+    // 6. Zero-Hour People: assigned Jira tasks but 0 Tempo hours this month
+    const tempoPeople = new Set(tempoData.people.map((p) => p.name));
+    const jiraAssignees = new Set<string>();
+    allIssuesCombined.forEach((i) => {
+      if (i.fields.assignee?.displayName && categorizeStatus(i.fields.status.name) !== 'done') {
+        jiraAssignees.add(i.fields.assignee.displayName);
+      }
+    });
+    const zeroPeople = [...jiraAssignees].filter((n) => !tempoPeople.has(n)).sort();
+
+    const weekLabel = `${lastMonday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${lastFriday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+
+    return { missingTimesheets, lowTimesheets, unlinkedByPerson, overtimeDays, ghostTasks, weekendWarriors, zeroPeople, weekLabel };
+  }, [tempoData, jiraIssues, deliveryIssues]);
 
   const sections: Array<{ key: ReportSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { key: 'delivery', label: 'Delivery Performance', icon: CheckCircle2 },
     { key: 'time', label: 'Time Intelligence', icon: Clock },
     { key: 'insights', label: 'Operational Insights', icon: Zap },
+    { key: 'monitor', label: 'Monitor', icon: Eye },
   ];
 
   return (
@@ -311,7 +488,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
           </ReportCard>
 
           {jiraMetrics.stale > 0 && (
-            <ReportCard title="Stale Task Frequency" subtitle="Who has tasks with no updates in 3+ days" icon={AlertCircle}>
+            <ReportCard title="Stale Task Frequency" subtitle="Who has tasks with no updates in 3+ days (excludes recurring)" icon={AlertCircle}>
               <div className="space-y-2">
                 {Object.entries(jiraMetrics.personStale).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a).map(([name, c]) => (
                   <div key={name} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0">
@@ -322,6 +499,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
               </div>
             </ReportCard>
           )}
+
         </div>
       )}
 
@@ -338,17 +516,41 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
           </div>
           {tempoMetrics.noJiraHours > 0 && (
             <div className="rounded-lg bg-amber-50/70 border border-amber-200 px-3 py-2 text-xs text-amber-700">
-              <span className="font-semibold">{tempoMetrics.noJiraHours}h</span> logged against unresolved Jira issues (time tracked without a linked ticket)
+              <span className="font-semibold">{tempoMetrics.noJiraHours}h</span> logged without a linked Jira ticket.{' '}
+              <button onClick={() => setActiveSection('monitor')} className="text-indigo-600 hover:text-indigo-800 font-semibold underline">See details in Monitor →</button>
             </div>
           )}
-          <ReportCard title="Hours per Person" subtitle="This month with month-over-month trend" icon={Users}>
-            <div className="space-y-2">
-              {Object.entries(tempoMetrics.personUtilization).sort(([, a], [, b]) => b.current - a.current).map(([name, data]) => {
-                const mx = Math.max(...Object.values(tempoMetrics.personUtilization).map((v) => v.current), 1);
-                return (<div key={name} className="flex items-center gap-2"><span className="text-xs font-medium text-slate-700 w-24 truncate">{name.split(' ')[0]}</span><div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-400 rounded-full" style={{ width: `${Math.round((data.current / mx) * 100)}%` }} /></div><span className="text-xs font-bold text-slate-600 w-12 text-right">{Math.round(data.current)}h</span>{data.delta !== 0 && <span className={`text-[10px] font-semibold w-10 text-right ${data.delta > 0 ? 'text-emerald-500' : 'text-red-500'}`}>{data.delta > 0 ? '+' : ''}{data.delta}%</span>}</div>);
-              })}
-            </div>
+
+          {/* Time Distribution + Peak Load Days — side by side on desktop */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <ReportCard title="Time Distribution" icon={Grid3X3}>
+              <ResponsiveContainer width="100%" height={260}>
+                <PieChart><Pie data={tempoMetrics.projects.slice(0, 8).map((p) => ({ name: resolveAreaName(p.projectKey), value: Math.round(p.hours) }))} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2} dataKey="value" label={(props: PieLabelRenderProps) => `${props.name ?? ''}: ${Math.round((Number(props.percent) || 0) * 100)}%`}>{tempoMetrics.projects.slice(0, 8).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Pie><Tooltip contentStyle={{ fontSize: 12 }} /></PieChart>
+              </ResponsiveContainer>
+            </ReportCard>
+            <ReportCard title="Peak Load Days" icon={Clock}>
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => ({ day: d, hours: Math.round(tempoMetrics.dayOfWeekHours[d] ?? 0) }))} margin={{ left: 0, right: 0 }}>
+                  <XAxis dataKey="day" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip contentStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="hours" fill={INDIGO} radius={[4, 4, 0, 0]}>{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d, i) => <Cell key={i} fill={d === 'Sat' || d === 'Sun' ? SLATE : INDIGO} />)}</Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </ReportCard>
+          </div>
+
+          {/* Hours per Person — collapsible, default expanded */}
+          <ReportCard title="Hours per Person" subtitle="This month with month-over-month trend" icon={Users}
+            action={<button onClick={() => setHoursPerPersonOpen(!hoursPerPersonOpen)} className="text-[10px] text-slate-400 hover:text-slate-600 flex items-center gap-0.5">{hoursPerPersonOpen ? <><ChevronUp className="w-3 h-3" />Collapse</> : <><ChevronDown className="w-3 h-3" />Expand</>}</button>}>
+            {hoursPerPersonOpen && (
+              <div className="space-y-2">
+                {Object.entries(tempoMetrics.personUtilization).sort(([, a], [, b]) => b.current - a.current).map(([name, data]) => {
+                  const mx = Math.max(...Object.values(tempoMetrics.personUtilization).map((v) => v.current), 1);
+                  return (<div key={name} className="flex items-center gap-2"><span className="text-xs font-medium text-slate-700 w-24 truncate">{name.split(' ')[0]}</span><div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-400 rounded-full" style={{ width: `${Math.round((data.current / mx) * 100)}%` }} /></div><span className="text-xs font-bold text-slate-600 w-12 text-right">{Math.round(data.current)}h</span>{data.delta !== 0 && <span className={`text-[10px] font-semibold w-10 text-right ${data.delta > 0 ? 'text-emerald-500' : 'text-red-500'}`}>{data.delta > 0 ? '+' : ''}{data.delta}%</span>}</div>);
+                })}
+              </div>
+            )}
           </ReportCard>
+
           <ReportCard title="Hours by Project/Area" subtitle="Where time is being spent (excludes unlinked)" icon={BarChart3}>
             <ResponsiveContainer width="100%" height={Math.max(180, Math.min(tempoMetrics.projects.length, 15) * 28)}>
               <BarChart data={tempoMetrics.projects.slice(0, 15).map((p) => ({ name: resolveAreaName(p.projectKey), hours: Math.round(p.hours) }))} layout="vertical" margin={{ left: 0, right: 10 }}>
@@ -356,19 +558,6 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
                 <Tooltip contentStyle={{ fontSize: 12 }} />
                 <Bar dataKey="hours" fill={INDIGO} radius={[0, 4, 4, 0]}>{tempoMetrics.projects.slice(0, 15).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Bar>
               </BarChart>
-            </ResponsiveContainer>
-          </ReportCard>
-          <ReportCard title="Peak Load Days" icon={Clock}>
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => ({ day: d, hours: Math.round(tempoMetrics.dayOfWeekHours[d] ?? 0) }))} margin={{ left: 0, right: 0 }}>
-                <XAxis dataKey="day" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip contentStyle={{ fontSize: 12 }} />
-                <Bar dataKey="hours" fill={INDIGO} radius={[4, 4, 0, 0]}>{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d, i) => <Cell key={i} fill={d === 'Sat' || d === 'Sun' ? SLATE : INDIGO} />)}</Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </ReportCard>
-          <ReportCard title="Time Distribution" icon={Grid3X3}>
-            <ResponsiveContainer width="100%" height={260}>
-              <PieChart><Pie data={tempoMetrics.projects.slice(0, 8).map((p) => ({ name: resolveAreaName(p.projectKey), value: Math.round(p.hours) }))} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2} dataKey="value" label={(props: PieLabelRenderProps) => `${props.name ?? ''}: ${Math.round((Number(props.percent) || 0) * 100)}%`}>{tempoMetrics.projects.slice(0, 8).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Pie><Tooltip contentStyle={{ fontSize: 12 }} /></PieChart>
             </ResponsiveContainer>
           </ReportCard>
         </div>
@@ -379,13 +568,41 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
         <div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /><span className="ml-2 text-sm text-slate-400">Loading...</span></div>
       ) : crossMetrics && jiraMetrics && tempoMetrics ? (
         <div className="space-y-4">
-          <ReportCard title="Area Health Overview" subtitle="Click Delivery to see per-project breakdown" icon={TrendingUp}>
+          {/* Recurring Work — top of Operational Insights */}
+          {jiraMetrics.recurringCount > 0 && (
+            <ReportCard title="Recurring Work" subtitle={`${jiraMetrics.recurringCount} ongoing tasks excluded from stale/overdue counts`} icon={Clock}>
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(jiraMetrics.recurringByArea).sort(([, a], [, b]) => b - a).map(([area, count]) => (
+                    <span key={area} className="text-xs bg-purple-50 text-purple-700 px-2.5 py-1 rounded-lg font-medium">
+                      {area}: {count}
+                    </span>
+                  ))}
+                </div>
+                <div className="space-y-2 mt-2">
+                  {Object.entries(jiraMetrics.recurringByPerson).sort(([, a], [, b]) => b.length - a.length).map(([name, tasks]) => (
+                    <div key={name}>
+                      <div className="text-xs font-semibold text-slate-700 mb-0.5">{name} ({tasks.length})</div>
+                      <div className="flex flex-wrap gap-1">
+                        {tasks.map((t, i) => (
+                          <span key={i} className="text-[10px] text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded">{t}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </ReportCard>
+          )}
+
+          {/* Area Health — only active projects */}
+          <ReportCard title="Area Health Overview" subtitle="Only projects with hours logged this month. Throughput = % of tasks marked Done. Click Delivery to expand per client." icon={TrendingUp}>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead><tr className="border-b border-slate-200"><th className="text-left py-2 font-semibold text-slate-500">Area</th><th className="text-right py-2 font-semibold text-slate-500">Hours</th><th className="text-right py-2 font-semibold text-slate-500">Tasks</th><th className="text-right py-2 font-semibold text-slate-500">Done</th><th className="text-right py-2 font-semibold text-slate-500">Overdue</th><th className="text-right py-2 font-semibold text-slate-500">Throughput</th></tr></thead>
                 <tbody>
-                  {crossMetrics.areaHealth.sort((a, b) => b.hours - a.hours).map((row) => (
-                    <>{/* eslint-disable-next-line react/jsx-key */}
+                  {crossMetrics.areaHealth.filter((r) => r.hours > 0).sort((a, b) => b.hours - a.hours).map((row) => (
+                    <React.Fragment key={row.area}>
                       <tr className={`border-b border-slate-50 ${row.isDelivery ? 'cursor-pointer hover:bg-slate-50' : ''}`} onClick={() => row.isDelivery && setExpandedDeliveryArea(expandedDeliveryArea === 'ins-' + row.area ? null : 'ins-' + row.area)}>
                         <td className="py-2 font-medium text-slate-700"><span className="flex items-center gap-1">{row.area}{row.isDelivery && (expandedDeliveryArea === 'ins-' + row.area ? <ChevronUp className="w-3 h-3 text-slate-400" /> : <ChevronDown className="w-3 h-3 text-slate-400" />)}</span></td>
                         <td className="py-2 text-right text-indigo-600 font-semibold">{Math.round(row.hours)}h</td>
@@ -404,71 +621,209 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
                           <td className="py-1.5 text-right text-[11px] text-slate-400">{sp.total > 0 ? Math.round((sp.done / sp.total) * 100) : 0}%</td>
                         </tr>
                       ))}
-                    </>
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>
             </div>
           </ReportCard>
 
-          <ReportCard title="Time Allocation Matrix" subtitle="Who spends time where (excludes unlinked)" icon={Grid3X3}>
-            <div className="overflow-x-auto">
-              <table className="w-full text-[11px]">
-                <thead><tr className="border-b border-slate-200"><th className="text-left py-2 font-semibold text-slate-500 sticky left-0 bg-white">Person</th>{crossMetrics.allAreas.map((a) => <th key={a} className="text-center py-2 font-semibold text-slate-500 px-2 min-w-[60px]">{a.length > 10 ? a.slice(0, 8) + '…' : a}</th>)}<th className="text-center py-2 font-semibold text-slate-500 px-2">Spread</th></tr></thead>
-                <tbody>
-                  {Object.entries(crossMetrics.allocationMatrix).sort(([, a], [, b]) => Object.values(b).reduce((s, v) => s + v, 0) - Object.values(a).reduce((s, v) => s + v, 0)).map(([name, areas]) => {
-                    const total = Object.values(areas).reduce((s, v) => s + v, 0);
-                    const ac = Object.values(areas).filter((v) => v > 0).length;
-                    return (<tr key={name} className="border-b border-slate-50"><td className="py-1.5 font-medium text-slate-700 sticky left-0 bg-white">{name.split(' ')[0]}</td>{crossMetrics.allAreas.map((a) => { const h = Math.round(areas[a] ?? 0); const p = total > 0 ? Math.round((h / total) * 100) : 0; return <td key={a} className="text-center py-1.5 px-1">{h > 0 ? <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${p >= 50 ? 'bg-indigo-100 text-indigo-700' : p >= 20 ? 'bg-slate-100 text-slate-600' : 'text-slate-400'}`}>{h}h</span> : <span className="text-slate-200">—</span>}</td>; })}<td className="text-center py-1.5"><span className={`text-[10px] font-bold ${ac >= 4 ? 'text-red-500' : ac >= 3 ? 'text-amber-500' : 'text-emerald-500'}`}>{ac}</span></td></tr>);
-                  })}
-                </tbody>
-              </table>
-            </div>
+          {/* Person Performance — ALL people, no cap */}
+          <ReportCard title="Person Performance Overview" subtitle="Everyone with Tempo hours or Jira activity this month. Completed = tasks moved to Done. Overdue+Stale = tasks needing attention." icon={Users}
+            action={<button onClick={() => setPersonPerfOpen(!personPerfOpen)} className="text-[10px] text-slate-400 hover:text-slate-600 flex items-center gap-0.5">{personPerfOpen ? <><ChevronUp className="w-3 h-3" />Collapse</> : <><ChevronDown className="w-3 h-3" />Expand</>}</button>}>
+            {personPerfOpen && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {crossMetrics.personPerformance.map((p) => (
+                  <div key={p.name} className="rounded-lg border border-slate-200 p-3">
+                    <div className="font-semibold text-sm text-slate-800 mb-2">{p.name}</div>
+                    <div className="grid grid-cols-3 gap-2 mb-2">
+                      <div className="text-center"><div className="text-lg font-bold text-indigo-600">{Math.round(p.hours)}</div><div className="text-[9px] text-slate-400 uppercase">Hours</div></div>
+                      <div className="text-center"><div className={`text-lg font-bold ${p.completed > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{p.completed}</div><div className="text-[9px] text-slate-400 uppercase">Completed</div></div>
+                      <div className="text-center"><div className={`text-lg font-bold ${p.overdue + p.stale > 0 ? 'text-red-600' : 'text-slate-300'}`}>{p.overdue + p.stale}</div><div className="text-[9px] text-slate-400 uppercase">Overdue+Stale</div></div>
+                    </div>
+                    {p.areas.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {p.areas.slice(0, 4).map((a) => <span key={a} className="text-[9px] bg-slate-50 text-slate-500 px-1.5 py-0.5 rounded">{a.length > 14 ? a.slice(0, 12) + '…' : a}</span>)}
+                        {p.areas.length > 4 && <span className="text-[9px] text-slate-400">+{p.areas.length - 4}</span>}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </ReportCard>
 
-          <ReportCard title="Person Performance Overview" subtitle="Hours, completions, issues, and areas per person" icon={Users}>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {crossMetrics.personPerformance.slice(0, 12).map((p) => (
-                <div key={p.name} className="rounded-lg border border-slate-200 p-3">
-                  <div className="font-semibold text-sm text-slate-800 mb-2">{p.name}</div>
-                  <div className="grid grid-cols-3 gap-2 mb-2">
-                    <div className="text-center"><div className="text-lg font-bold text-indigo-600">{Math.round(p.hours)}</div><div className="text-[9px] text-slate-400 uppercase">Hours</div></div>
-                    <div className="text-center"><div className="text-lg font-bold text-emerald-600">{p.completed}</div><div className="text-[9px] text-slate-400 uppercase">Done</div></div>
-                    <div className="text-center"><div className={`text-lg font-bold ${p.overdue + p.stale > 0 ? 'text-red-600' : 'text-slate-300'}`}>{p.overdue + p.stale}</div><div className="text-[9px] text-slate-400 uppercase">Issues</div></div>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex flex-wrap gap-1">{p.areas.slice(0, 3).map((a) => <span key={a} className="text-[9px] bg-slate-50 text-slate-500 px-1.5 py-0.5 rounded">{a.length > 12 ? a.slice(0, 10) + '…' : a}</span>)}{p.areas.length > 3 && <span className="text-[9px] text-slate-400">+{p.areas.length - 3}</span>}</div>
-                    {p.hoursPerTask && <span className="text-[10px] text-slate-400">{p.hoursPerTask}h/task</span>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </ReportCard>
-
-          <ReportCard title="Monthly Ops Scorecard" subtitle="At-a-glance operational health" icon={CheckCircle2}>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="rounded-lg border border-slate-200 p-3 text-center">
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium mb-1">Hours</div>
-                <div className="text-2xl font-bold text-indigo-600">{Math.round(tempoMetrics.totalHours)}</div>
-                {tempoMetrics.hoursDelta !== 0 && <div className={`text-[11px] font-semibold mt-0.5 ${tempoMetrics.hoursDelta > 0 ? 'text-emerald-500' : 'text-red-500'}`}>{tempoMetrics.hoursDelta > 0 ? '↑' : '↓'} {Math.abs(tempoMetrics.hoursDelta)}%</div>}
-              </div>
-              <div className="rounded-lg border border-slate-200 p-3 text-center">
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium mb-1">Done</div>
-                <div className="text-2xl font-bold text-emerald-600">{jiraMetrics.doneInPeriod}</div>
-                <div className="text-[11px] text-slate-400 mt-0.5">this month</div>
-              </div>
-              <div className="rounded-lg border border-slate-200 p-3 text-center">
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium mb-1">Overdue</div>
-                <div className={`text-2xl font-bold ${jiraMetrics.overdue > 5 ? 'text-red-600' : jiraMetrics.overdue > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>{jiraMetrics.overdue}</div>
-              </div>
-              <div className="rounded-lg border border-slate-200 p-3 text-center">
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium mb-1">Stale</div>
-                <div className={`text-2xl font-bold ${jiraMetrics.stale > 5 ? 'text-red-600' : jiraMetrics.stale > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>{jiraMetrics.stale}</div>
-              </div>
-            </div>
-          </ReportCard>
         </div>
       ) : <div className="text-center py-12 text-slate-400"><p className="text-sm">Both Jira and Tempo data needed.</p></div>)}
+
+      {/* ═══ MONITOR ═══ */}
+      {activeSection === 'monitor' && (tempoLoading ? (
+        <div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /><span className="ml-2 text-sm text-slate-400">Loading...</span></div>
+      ) : monitorMetrics ? (
+        <div className="space-y-4">
+
+          {/* 1. Missing Timesheets */}
+          <ReportCard title="Missing Timesheets" subtitle={`Week of ${monitorMetrics.weekLabel} — people who logged zero hours`} icon={CalendarOff}>
+            {monitorMetrics.missingTimesheets.length === 0 ? (
+              <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">Everyone submitted last week!</span></div>
+            ) : (
+              <div className="space-y-2">
+                {monitorMetrics.missingTimesheets.map((name) => (
+                  <div key={name} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-0">
+                    <span className="text-sm font-medium text-slate-700">{name}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-red-600 font-bold bg-red-50 px-2 py-0.5 rounded-md">0 hours</span>
+                      {copiedNudge === name ? (
+                        <span className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-1 rounded font-medium flex items-center gap-0.5">
+                          <CheckCircle2 className="w-3 h-3" />Copied! Paste in Slack
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            const msg = `Hey ${name.split(' ')[0]}! 👋 Friendly reminder — it looks like your timesheet for last week (${monitorMetrics.weekLabel}) hasn't been submitted yet. Could you please log your hours when you get a chance? Thanks!`;
+                            navigator.clipboard.writeText(msg);
+                            setCopiedNudge(name);
+                            setTimeout(() => setCopiedNudge(null), 3000);
+                          }}
+                          className="text-[10px] bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-2 py-1 rounded font-medium transition-colors flex items-center gap-0.5"
+                          title="Copy a friendly reminder to your clipboard, then paste it in Slack"
+                        >
+                          <Send className="w-3 h-3" />Copy Reminder
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {monitorMetrics.lowTimesheets.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-slate-100">
+                <div className="text-[11px] text-amber-600 font-semibold mb-2">⚠️ Low hours (under 20h):</div>
+                <div className="space-y-1">
+                  {monitorMetrics.lowTimesheets.map((p) => (
+                    <div key={p.name} className="flex items-center justify-between text-xs">
+                      <span className="text-slate-600">{p.name}</span>
+                      <span className="text-amber-600 font-semibold">{p.hours}h</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </ReportCard>
+
+          {/* 2. Unlinked Time */}
+          <ReportCard title="Time Without Jira Ticket" subtitle="Hours logged this month with no linked issue — click to expand" icon={AlertCircle}>
+            {monitorMetrics.unlinkedByPerson.length === 0 ? (
+              <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">All time entries are linked to Jira tickets!</span></div>
+            ) : (
+              <div className="space-y-2">
+                {monitorMetrics.unlinkedByPerson.map((p) => {
+                  const isExp = expandedDeliveryArea === 'unlinked-' + p.name;
+                  return (
+                    <div key={p.name}>
+                      <div className="flex items-center justify-between py-2 border-b border-slate-50 cursor-pointer hover:bg-slate-50 rounded" onClick={() => setExpandedDeliveryArea(isExp ? null : 'unlinked-' + p.name)}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-slate-700">{p.name}</span>
+                          {isExp ? <ChevronUp className="w-3 h-3 text-slate-400" /> : <ChevronDown className="w-3 h-3 text-slate-400" />}
+                        </div>
+                        <span className="text-xs text-amber-600 font-bold bg-amber-50 px-2 py-0.5 rounded-md">{p.hours}h unlinked</span>
+                      </div>
+                      {isExp && (
+                        <div className="ml-4 mt-1 mb-2 space-y-1 border-l-2 border-slate-100 pl-3">
+                          {p.entries.map((e, idx) => (
+                            <div key={idx} className="flex items-center justify-between text-[11px]">
+                              <span className="text-slate-500">{new Date(e.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — {e.comment || '(no description)'}</span>
+                              <span className="text-slate-600 font-medium">{e.hours}h</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </ReportCard>
+
+          {/* 3. Overtime Watch */}
+          <ReportCard title="Overtime Watch" subtitle="Days with 9+ hours logged — possible burnout risk or data entry error" icon={AlertOctagon}>
+            {monitorMetrics.overtimeDays.length === 0 ? (
+              <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">No overtime days this month.</span></div>
+            ) : (
+              <div className="space-y-1.5">
+                {monitorMetrics.overtimeDays.slice(0, 15).map((d, i) => (
+                  <div key={i} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-slate-700">{d.name}</span>
+                      <span className="text-[10px] text-slate-400">{new Date(d.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+                    </div>
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-md ${d.hours >= 12 ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600'}`}>{d.hours}h</span>
+                  </div>
+                ))}
+                {monitorMetrics.overtimeDays.length > 15 && <p className="text-[10px] text-slate-400 pt-1">+{monitorMetrics.overtimeDays.length - 15} more</p>}
+              </div>
+            )}
+          </ReportCard>
+
+          {/* 4. Ghost Tasks */}
+          <ReportCard title="Ghost Tasks" subtitle="In Progress 7+ days with zero Tempo hours — assigned but not being worked on" icon={AlertCircle}>
+            {monitorMetrics.ghostTasks.length === 0 ? (
+              <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">All In Progress tasks have time logged!</span></div>
+            ) : (
+              <div className="space-y-1.5">
+                {monitorMetrics.ghostTasks.slice(0, 15).map((t) => (
+                  <div key={t.key} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0">
+                    <div className="min-w-0 flex-1">
+                      <a href={`${JIRA_BROWSE_URL}/${t.key}`} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline font-medium">{t.key}</a>
+                      <span className="text-xs text-slate-500 ml-1.5 truncate">{t.summary.slice(0, 45)}{t.summary.length > 45 ? '…' : ''}</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 ml-2">
+                      <span className="text-[10px] text-slate-400">{t.assignee}</span>
+                      <span className="text-[10px] text-red-500 font-semibold">{t.daysSilent}d silent</span>
+                    </div>
+                  </div>
+                ))}
+                {monitorMetrics.ghostTasks.length > 15 && <p className="text-[10px] text-slate-400 pt-1">+{monitorMetrics.ghostTasks.length - 15} more</p>}
+              </div>
+            )}
+          </ReportCard>
+
+          {/* 5. Weekend Warriors */}
+          <ReportCard title="Weekend Warriors" subtitle="Team members who logged hours on Saturday or Sunday this month" icon={Clock}>
+            {monitorMetrics.weekendWarriors.length === 0 ? (
+              <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">No weekend work logged this month.</span></div>
+            ) : (
+              <div className="space-y-1.5">
+                {monitorMetrics.weekendWarriors.map((w) => (
+                  <div key={w.name} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0">
+                    <span className="text-sm text-slate-700">{w.name}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-400">{w.days} day{w.days !== 1 ? 's' : ''}</span>
+                      <span className="text-xs text-purple-600 font-bold bg-purple-50 px-2 py-0.5 rounded-md">{w.hours}h</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </ReportCard>
+
+          {/* 6. Zero-Hour People */}
+          <ReportCard title="Zero-Hour People" subtitle="Assigned active Jira tasks but no Tempo hours this month" icon={Users}>
+            {monitorMetrics.zeroPeople.length === 0 ? (
+              <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">Everyone with tasks has logged time!</span></div>
+            ) : (
+              <div className="space-y-1.5">
+                {monitorMetrics.zeroPeople.map((name) => (
+                  <div key={name} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0">
+                    <span className="text-sm text-slate-700">{name}</span>
+                    <span className="text-xs text-red-600 font-bold bg-red-50 px-2 py-0.5 rounded-md">0h logged</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </ReportCard>
+        </div>
+      ) : <div className="text-center py-12 text-slate-400"><p className="text-sm">Tempo data needed for monitoring.</p></div>)}
     </div>
   );
 }

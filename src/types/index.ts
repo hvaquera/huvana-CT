@@ -17,6 +17,7 @@ export interface JiraIssue {
     priority: { name: string };
     project: { key: string; name: string };
     parent?: { key: string; fields: { summary: string } };
+    issuetype?: { name: string; hierarchyLevel?: number };
     description?: unknown;
     updated?: string;
     statuscategorychangedate?: string;
@@ -123,7 +124,7 @@ export interface ActualsResponse {
 
 export type AreaKey = 'VBTLEGAL' | 'VBTFINANCE' | 'VBTGTM' | 'VBTOP';
 export type FilterValue = 'all' | AreaKey | 'actuals' | 'delivery' | 'reports';
-export type StatusCategory = 'todo' | 'inProgress' | 'recurring' | 'done' | 'other';
+export type StatusCategory = 'todo' | 'inProgress' | 'recurring' | 'blocked' | 'done' | 'other';
 export type ActualsView = 'person' | 'project';
 
 export interface StatusConfig {

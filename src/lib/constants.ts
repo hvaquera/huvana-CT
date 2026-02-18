@@ -22,6 +22,7 @@ const STATUS_CONFIG: Record<string, StatusConfig> = {
   'to do': { label: 'To Do', color: 'text-slate-700', bgColor: 'bg-slate-100' },
   'in progress': { label: 'In Progress', color: 'text-blue-700', bgColor: 'bg-blue-100' },
   'recurring work': { label: 'Recurring', color: 'text-purple-700', bgColor: 'bg-purple-100' },
+  'blocked': { label: 'Blocked', color: 'text-red-700', bgColor: 'bg-red-100' },
   'done': { label: 'Done', color: 'text-green-700', bgColor: 'bg-green-100' },
   'document sent': { label: 'Doc Sent', color: 'text-amber-700', bgColor: 'bg-amber-100' },
   'docusign sent': { label: 'Docusign', color: 'text-orange-700', bgColor: 'bg-orange-100' },
@@ -38,10 +39,22 @@ export function getStatusConfig(statusName: string): StatusConfig {
 /** Categorize a Jira status into a bucket for counting/sorting. */
 export function categorizeStatus(statusName: string): StatusCategory {
   const s = statusName.toLowerCase();
-  if (s.includes('done') || s.includes('closed')) return 'done';
-  if (s.includes('progress') || s.includes('document sent') || s.includes('docusign')) return 'inProgress';
+  if (s.includes('done') || s.includes('closed') || s.includes('resolved') || s.includes('completed')) return 'done';
   if (s.includes('recurring')) return 'recurring';
-  if (s.includes('to do') || s.includes('backlog') || s.includes('not specified')) return 'todo';
+  if (s.includes('blocked')) return 'blocked';
+  if (
+    s.includes('progress') ||
+    s.includes('in review') ||
+    s.includes('active') ||
+    s.includes('working') ||
+    s.includes('development') ||
+    s.includes('design') ||
+    s.includes('testing') ||
+    s.includes('document sent') ||
+    s.includes('docusign') ||
+    s.includes('pending')
+  ) return 'inProgress';
+  if (s.includes('to do') || s.includes('backlog') || s.includes('not specified') || s.includes('open') || s.includes('new')) return 'todo';
   return 'other';
 }
 
@@ -66,10 +79,11 @@ export const NEXT_DAYS = 10;
 /** Sort priority for status categories (lower = higher priority). */
 export const STATUS_SORT_ORDER: Record<StatusCategory, number> = {
   inProgress: 0,
-  todo: 1,
-  recurring: 2,
-  other: 3,
-  done: 4,
+  blocked: 1,
+  todo: 2,
+  recurring: 3,
+  other: 4,
+  done: 5,
 };
 
 /**

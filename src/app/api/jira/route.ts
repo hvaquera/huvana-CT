@@ -17,18 +17,27 @@ export async function GET() {
 
     for (const project of OPS_PROJECTS) {
       try {
-        const jql = `project = ${project} ORDER BY created DESC`;
-        const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=100&fields=summary,status,assignee,duedate,priority,project,parent,description,updated,statuscategorychangedate`;
+        // Fetch active (non-Done) tasks first — these are what matter most
+        const activeJql = `project = ${project} AND statusCategory != Done ORDER BY updated DESC`;
+        const activeUrl = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(activeJql)}&maxResults=100&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate`;
 
-        const data = await fetchJson<JiraSearchResponse>(url, {
+        const activeData = await fetchJson<JiraSearchResponse>(activeUrl, {
           Authorization: `Basic ${JIRA_AUTH}`,
           Accept: 'application/json',
         });
+        allIssues.push(...activeData.issues);
 
-        allIssues.push(...data.issues);
+        // Also fetch recently completed tasks (last 90 days) for reports
+        const doneJql = `project = ${project} AND statusCategory = Done AND updated >= -90d ORDER BY updated DESC`;
+        const doneUrl = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(doneJql)}&maxResults=50&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate`;
+
+        const doneData = await fetchJson<JiraSearchResponse>(doneUrl, {
+          Authorization: `Basic ${JIRA_AUTH}`,
+          Accept: 'application/json',
+        });
+        allIssues.push(...doneData.issues);
       } catch (err) {
         console.error(`[Jira] Failed to fetch project ${project}:`, err);
-        // Continue with other projects
       }
     }
 

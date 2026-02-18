@@ -11,7 +11,7 @@ import OpsDetails from '@/components/dashboard/OpsDetails';
 import TimeActualsTab from '@/components/dashboard/TimeActualsTab';
 import DeliveryTab from '@/components/dashboard/DeliveryTab';
 import ReportsTab from '@/components/dashboard/ReportsTab';
-import { REFRESH_INTERVAL_MS, categorizeStatus, STATUS_SORT_ORDER } from '@/lib/constants';
+import { REFRESH_INTERVAL_MS, categorizeStatus, STATUS_SORT_ORDER, AREA_MAP } from '@/lib/constants';
 import type { JiraIssue, FilterValue, EpicProgress } from '@/types';
 
 export default function Dashboard() {
@@ -27,15 +27,20 @@ export default function Dashboard() {
   const fetchIssues = useCallback(async (showLoader = false) => {
     if (showLoader) setIsRefreshing(true);
     try {
-      const [jiraRes, deliveryRes] = await Promise.all([
+      const [jiraRes, deliveryRes, deliveryAllRes] = await Promise.all([
         fetch('/api/jira'),
         fetch('/api/jira/delivery'),
+        fetch('/api/jira/delivery-all'),
       ]);
       if (jiraRes.ok) {
         const data = await jiraRes.json();
         setIssues(data.issues ?? []);
       }
-      if (deliveryRes.ok) {
+      if (deliveryAllRes.ok) {
+        const data = await deliveryAllRes.json();
+        setDeliveryIssues(data.issues ?? []);
+      } else if (deliveryRes.ok) {
+        // Fallback to delivery without Done if delivery-all fails
         const data = await deliveryRes.json();
         setDeliveryIssues(data.issues ?? []);
       }
@@ -67,6 +72,7 @@ export default function Dashboard() {
   const overdueTasks = useMemo(() => {
     return areaIssues.filter((i) => {
       if (!i.fields.duedate) return false;
+      if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
       const due = new Date(i.fields.duedate);
       due.setHours(0, 0, 0, 0);
       const today = new Date();
@@ -77,13 +83,20 @@ export default function Dashboard() {
 
   const allActiveTasks = useMemo(() => {
     return areaIssues
-      .filter((i) => categorizeStatus(i.fields.status.name) !== 'done')
+      .filter((i) => {
+        if (categorizeStatus(i.fields.status.name) === 'done') return false;
+        if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
+        return true;
+      })
       .sort((a, b) => {
+        // Status category first: In Progress → Blocked → To Do → Recurring → Other
+        const statusDiff = (STATUS_SORT_ORDER[categorizeStatus(a.fields.status.name)] ?? 4)
+          - (STATUS_SORT_ORDER[categorizeStatus(b.fields.status.name)] ?? 4);
+        if (statusDiff !== 0) return statusDiff;
+        // Within same status: due date ascending (no due date last)
         const aDate = a.fields.duedate ? new Date(a.fields.duedate).getTime() : Infinity;
         const bDate = b.fields.duedate ? new Date(b.fields.duedate).getTime() : Infinity;
-        if (aDate !== bDate) return aDate - bDate;
-        return (STATUS_SORT_ORDER[categorizeStatus(a.fields.status.name)] ?? 3)
-          - (STATUS_SORT_ORDER[categorizeStatus(b.fields.status.name)] ?? 3);
+        return aDate - bDate;
       });
   }, [areaIssues]);
 
@@ -104,12 +117,16 @@ export default function Dashboard() {
 
   // CT-5: Stale tasks — In Progress with no Jira activity in 3+ days
   const staleTasks = useMemo(() => {
-    const STALE_DAYS = 3;
+    const opsProjectKeys = new Set(Object.keys(AREA_MAP));
     return areaIssues.filter((i) => {
       if (categorizeStatus(i.fields.status.name) !== 'inProgress') return false;
       if (!i.fields.updated) return false;
+      const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
+      const isOps = opsProjectKeys.has(i.fields.project.key);
       const daysSince = Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000);
-      return daysSince >= STALE_DAYS;
+      if (isEpic && isOps) return false; // Ops epics: never stale
+      if (isEpic) return daysSince >= 14; // Delivery epics: 14-day threshold
+      return daysSince >= 3; // Regular tasks: 3 days
     });
   }, [areaIssues]);
 

@@ -6,12 +6,13 @@ import type { ActualsResponse, ActualsPerson, ActualsProjectTotal } from '@/type
 
 interface ResolvedIssue {
   key: string;
+  summary: string;
   projectKey: string;
   projectName: string;
 }
 
 /**
- * Resolve Tempo issue IDs to Jira issue keys + project info.
+ * Resolve Tempo issue IDs to Jira issue keys + project info + summary.
  * Tempo v4 returns `issue.id` but not `issue.key`, so we batch-resolve via Jira REST API.
  * Results are cached for 1 hour to minimize API calls.
  */
@@ -23,11 +24,11 @@ async function resolveIssueIds(issueIds: string[]): Promise<Map<string, Resolved
     const batch = issueIds.slice(i, i + BATCH_SIZE);
     const results = await Promise.allSettled(
       batch.map(async (issueId) => {
-        const data = await fetchJson<{ key: string; fields: { project: { key: string; name: string } } }>(
-          `${JIRA_BASE}/rest/api/2/issue/${issueId}?fields=project`,
+        const data = await fetchJson<{ key: string; fields: { summary: string; project: { key: string; name: string } } }>(
+          `${JIRA_BASE}/rest/api/2/issue/${issueId}?fields=project,summary`,
           { Authorization: `Basic ${JIRA_AUTH}` },
         );
-        return { issueId, key: data.key, projectKey: data.fields.project.key, projectName: data.fields.project.name };
+        return { issueId, key: data.key, summary: data.fields.summary, projectKey: data.fields.project.key, projectName: data.fields.project.name };
       }),
     );
 
@@ -98,11 +99,16 @@ export async function GET(request: Request) {
       // 1. Fetch all worklogs for the month
       const worklogs = await fetchTempoWorklogs(from, to);
 
-      // 2. Resolve issue IDs → Jira keys (batch, concurrent)
-      const uniqueIssueIds = [...new Set(
-        worklogs.filter((w) => w.issue?.id && !w.issue?.key).map((w) => String(w.issue.id)),
-      )];
-      const issueCache = await resolveIssueIds(uniqueIssueIds);
+      // 2. Collect ALL unique issue IDs for summary resolution
+      const allIssueIds = new Set<string>();
+      const keyToIdMap = new Map<string, string>(); // issue.key → issue.id for cross-referencing
+      for (const w of worklogs) {
+        if (w.issue?.id) {
+          allIssueIds.add(String(w.issue.id));
+          if (w.issue.key) keyToIdMap.set(w.issue.key, String(w.issue.id));
+        }
+      }
+      const issueCache = await resolveIssueIds([...allIssueIds]);
 
       // 3. Resolve user account IDs → display names
       const uniqueAccountIds = [...new Set(worklogs.map((w) => w.author?.accountId).filter(Boolean))] as string[];
@@ -128,6 +134,11 @@ export async function GET(request: Request) {
           issueKey = wl.issue.key;
           projectKey = wl.issue.key.split('-')[0];
           projectName = projectKey;
+          // Try to get proper summary from resolved cache
+          const resolvedById = wl.issue?.id ? issueCache.get(String(wl.issue.id)) : undefined;
+          if (resolvedById) {
+            projectName = resolvedById.projectName;
+          }
         } else if (wl.issue?.id) {
           const resolved = issueCache.get(String(wl.issue.id));
           if (resolved) {
@@ -137,7 +148,9 @@ export async function GET(request: Request) {
           }
         }
 
-        const taskSummary = wl.description || issueKey;
+        // Use Jira issue summary (from resolver), fall back to issue key, never use Tempo description as title
+        const resolvedIssue = wl.issue?.id ? issueCache.get(String(wl.issue.id)) : undefined;
+        const taskSummary = resolvedIssue?.summary || issueKey;
         const timeEntry = { date: wl.startDate, hours, comment: wl.description || '' };
 
         // Accumulate person data

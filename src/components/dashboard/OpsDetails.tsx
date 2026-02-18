@@ -16,11 +16,14 @@ interface OpsDetailsProps {
 export default function OpsDetails({ issues, filteredIssues, epicProgress }: OpsDetailsProps) {
   const [open, setOpen] = useState(false);
 
+  // Filter out epics for status counts — epics tracked separately in epic progress
+  const nonEpicIssues = filteredIssues.filter((i) => i.fields.issuetype?.name?.toLowerCase() !== 'epic');
+
   const statusCounts = {
-    todo: filteredIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'todo').length,
-    inProgress: filteredIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'inProgress').length,
-    recurring: filteredIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'recurring').length,
-    done: filteredIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'done').length,
+    todo: nonEpicIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'todo').length,
+    inProgress: nonEpicIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'inProgress').length,
+    recurring: nonEpicIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'recurring').length,
+    done: nonEpicIssues.filter((i) => categorizeStatus(i.fields.status.name) === 'done').length,
   };
 
   // Determine which areas are represented in the filtered view

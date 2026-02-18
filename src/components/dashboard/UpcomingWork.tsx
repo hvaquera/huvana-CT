@@ -22,10 +22,15 @@ export default function UpcomingWork({ issues, showArea = false }: UpcomingWorkP
   const futureDate = new Date(today);
   futureDate.setDate(today.getDate() + days);
 
-  // Active tasks (not done)
-  const activeTasks = issues.filter((i) => categorizeStatus(i.fields.status.name) !== 'done');
+  // Active tasks (not done, not epics, not recurring)
+  const activeTasks = issues.filter((i) => {
+    const s = categorizeStatus(i.fields.status.name);
+    if (s === 'done' || s === 'recurring') return false;
+    if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
+    return true;
+  });
 
-  // Tasks with no due date
+  // Tasks with no due date (recurring already excluded above)
   const noDueDateCount = activeTasks.filter((i) => !i.fields.duedate).length;
 
   // Due within window, not done, not overdue
