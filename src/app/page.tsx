@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Loader2, RefreshCw } from 'lucide-react';
+import { Loader2, RefreshCw, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import OverdueBlock from '@/components/dashboard/OverdueBlock';
 import UpcomingWork from '@/components/dashboard/UpcomingWork';
 import TaskSearch from '@/components/dashboard/TaskSearch';
+import TaskCard from '@/components/dashboard/TaskCard';
 import OpsDetails from '@/components/dashboard/OpsDetails';
 import TimeActualsTab from '@/components/dashboard/TimeActualsTab';
 import DeliveryTab from '@/components/dashboard/DeliveryTab';
@@ -18,6 +19,8 @@ export default function Dashboard() {
   const [filter, setFilter] = useState<FilterValue>('all');
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [staleExpanded, setStaleExpanded] = useState(false);
+  const [staleDismissed, setStaleDismissed] = useState(false);
 
   const fetchIssues = useCallback(async (showLoader = false) => {
     if (showLoader) setIsRefreshing(true);
@@ -27,6 +30,8 @@ export default function Dashboard() {
       const data = await res.json();
       setIssues(data.issues ?? []);
       setLastRefresh(new Date());
+      setStaleDismissed(false);
+      setStaleExpanded(false);
     } catch (err) {
       console.error('[Dashboard] Fetch error:', err);
     } finally {
@@ -167,14 +172,42 @@ export default function Dashboard() {
             <OverdueBlock tasks={overdueTasks} showArea={showArea} />
 
             {/* 1b. Stale Tasks Warning */}
-            {staleTasks.length > 0 && (
+            {staleTasks.length > 0 && !staleDismissed && (
               <div className="rounded-xl bg-amber-50/70 border border-amber-200 px-3 py-2.5 md:px-4 md:py-3">
                 <div className="flex items-center gap-2">
-                  <span className="text-amber-500 text-sm font-bold">⚠</span>
-                  <span className="text-xs font-semibold text-amber-700">
-                    {staleTasks.length} &quot;In Progress&quot; task{staleTasks.length !== 1 ? 's' : ''} with no updates in 3+ days
-                  </span>
+                  <button
+                    onClick={() => setStaleExpanded(!staleExpanded)}
+                    className="flex items-center gap-2 flex-1 text-left"
+                  >
+                    <span className="text-amber-500 text-sm font-bold">⚠</span>
+                    <span className="text-xs font-semibold text-amber-700">
+                      {staleTasks.length} &quot;In Progress&quot; task{staleTasks.length !== 1 ? 's' : ''} with no updates in 3+ days
+                    </span>
+                    <span className="text-amber-400">
+                      {staleExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => setStaleDismissed(true)}
+                    className="text-amber-400 hover:text-amber-600 p-0.5"
+                    title="Dismiss until refresh"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
                 </div>
+                {staleExpanded && (
+                  <div className="mt-2.5 pt-2.5 border-t border-amber-200/50 space-y-1.5">
+                    {staleTasks
+                      .sort((a, b) => {
+                        const aAge = a.fields.updated ? new Date(a.fields.updated).getTime() : 0;
+                        const bAge = b.fields.updated ? new Date(b.fields.updated).getTime() : 0;
+                        return aAge - bAge;
+                      })
+                      .map((task) => (
+                        <TaskCard key={task.key} issue={task} showArea={showArea} compact />
+                      ))}
+                  </div>
+                )}
               </div>
             )}
 
