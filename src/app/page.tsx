@@ -10,11 +10,13 @@ import TaskCard from '@/components/dashboard/TaskCard';
 import OpsDetails from '@/components/dashboard/OpsDetails';
 import TimeActualsTab from '@/components/dashboard/TimeActualsTab';
 import DeliveryTab from '@/components/dashboard/DeliveryTab';
+import ReportsTab from '@/components/dashboard/ReportsTab';
 import { REFRESH_INTERVAL_MS, categorizeStatus, STATUS_SORT_ORDER } from '@/lib/constants';
 import type { JiraIssue, FilterValue, EpicProgress } from '@/types';
 
 export default function Dashboard() {
   const [issues, setIssues] = useState<JiraIssue[]>([]);
+  const [deliveryIssues, setDeliveryIssues] = useState<JiraIssue[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterValue>('all');
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
@@ -25,10 +27,18 @@ export default function Dashboard() {
   const fetchIssues = useCallback(async (showLoader = false) => {
     if (showLoader) setIsRefreshing(true);
     try {
-      const res = await fetch('/api/jira');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setIssues(data.issues ?? []);
+      const [jiraRes, deliveryRes] = await Promise.all([
+        fetch('/api/jira'),
+        fetch('/api/jira/delivery'),
+      ]);
+      if (jiraRes.ok) {
+        const data = await jiraRes.json();
+        setIssues(data.issues ?? []);
+      }
+      if (deliveryRes.ok) {
+        const data = await deliveryRes.json();
+        setDeliveryIssues(data.issues ?? []);
+      }
       setLastRefresh(new Date());
       setStaleDismissed(false);
       setStaleExpanded(false);
@@ -159,14 +169,21 @@ export default function Dashboard() {
               >
                 Delivery
               </TabsTrigger>
+              <TabsTrigger
+                value="reports"
+                className="bg-amber-600 text-white data-[state=active]:bg-amber-700 data-[state=active]:text-white"
+              >
+                Reports
+              </TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
 
         {isActuals && <TimeActualsTab />}
         {isDelivery && <DeliveryTab />}
+        {filter === 'reports' && <ReportsTab jiraIssues={issues} deliveryIssues={deliveryIssues} />}
 
-        {!isActuals && !isDelivery && (
+        {!isActuals && !isDelivery && filter !== 'reports' && (
           <div className="space-y-4">
             {/* 1. Overdue */}
             <OverdueBlock tasks={overdueTasks} showArea={showArea} />
