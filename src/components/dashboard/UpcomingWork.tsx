@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import TaskCard from './TaskCard';
-import { categorizeStatus, AREA_MAP } from '@/lib/constants';
+import { categorizeStatus, formatDisplayName, AREA_MAP } from '@/lib/constants';
 import type { JiraIssue } from '@/types';
 
 const DAY_OPTIONS = [5, 7, 10] as const;
@@ -46,7 +46,9 @@ export default function UpcomingWork({ issues, showArea = false }: UpcomingWorkP
   // Group by person
   const byPerson = new Map<string, { name: string; tasks: JiraIssue[] }>();
   for (const task of upcoming) {
-    const name = task.fields.assignee?.displayName ?? 'Unassigned';
+    // Skip tasks assigned to deactivated users
+    if (task.fields.assignee?.active === false) continue;
+    const name = formatDisplayName(task.fields.assignee?.displayName ?? 'Unassigned');
     const existing = byPerson.get(name);
     if (existing) {
       existing.tasks.push(task);

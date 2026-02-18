@@ -121,6 +121,7 @@ export default function Dashboard() {
     return areaIssues.filter((i) => {
       if (categorizeStatus(i.fields.status.name) !== 'inProgress') return false;
       if (!i.fields.updated) return false;
+      if (i.fields.assignee?.active === false) return false;
       const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
       const isOps = opsProjectKeys.has(i.fields.project.key);
       const daysSince = Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000);

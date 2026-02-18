@@ -12,7 +12,7 @@ export interface JiraIssue {
   fields: {
     summary: string;
     status: { name: string };
-    assignee: { displayName: string } | null;
+    assignee: { displayName: string; active?: boolean; accountId?: string } | null;
     duedate: string | null;
     priority: { name: string };
     project: { key: string; name: string };

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { ExternalLink, ChevronDown, ChevronUp, AlertCircle } from 'lucide-react';
-import { getStatusConfig, categorizeStatus, formatDueDate, JIRA_BROWSE_URL } from '@/lib/constants';
+import { getStatusConfig, categorizeStatus, formatDueDate, formatDisplayName, JIRA_BROWSE_URL } from '@/lib/constants';
 import type { JiraIssue } from '@/types';
 
 /** Extract plain text from Jira ADF (Atlassian Document Format) description. */
@@ -117,7 +117,7 @@ export default function TaskCard({ issue, showArea = false, compact = false }: T
 
         {/* Assignee */}
         {issue.fields.assignee && (
-          <span className="text-xs text-slate-500">{issue.fields.assignee.displayName}</span>
+          <span className="text-xs text-slate-500">{formatDisplayName(issue.fields.assignee.displayName)}</span>
         )}
 
         {/* Area badge (for All tab) */}

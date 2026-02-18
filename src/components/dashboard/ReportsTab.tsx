@@ -11,7 +11,7 @@ import {
   PieChart, Pie, Legend,
 } from 'recharts';
 import type { PieLabelRenderProps } from 'recharts';
-import { categorizeStatus, AREA_MAP, JIRA_BROWSE_URL } from '@/lib/constants';
+import { categorizeStatus, AREA_MAP, JIRA_BROWSE_URL, formatDisplayName } from '@/lib/constants';
 import type { JiraIssue, ActualsResponse } from '@/types';
 
 type ReportSection = 'delivery' | 'time' | 'insights' | 'monitor';
@@ -85,6 +85,23 @@ function PeriodSelector({ value, onChange }: { value: TimePeriod; onChange: (v: 
 
 interface ReportsTabProps { jiraIssues: JiraIssue[]; deliveryIssues: JiraIssue[]; }
 
+/**
+ * Reports Tab — four-section analytics dashboard.
+ *
+ * Sections:
+ *  1. Delivery Performance — task completion by person/area, epic progress
+ *  2. Time Intelligence — Tempo hours distribution, utilization, peak load days
+ *  3. Operational Insights — cross-reference Jira + Tempo, person performance, area scorecard
+ *  4. Monitor — health metrics (missing timesheets, ghost tasks, overtime, weekend work)
+ *
+ * Data sources:
+ *  - jiraIssues: ops tasks from /api/jira
+ *  - deliveryIssues: client delivery tasks from /api/jira/delivery-all
+ *  - tempoData: time tracking from /api/tempo/actuals (fetched on-demand)
+ *
+ * Deactivated Jira users (active=false) are filtered from all person-level metrics.
+ * Display names in "firstname.lastname" format are auto-capitalized via formatDisplayName().
+ */
 export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabProps) {
   const [tempoData, setTempoData] = useState<ActualsResponse | null>(null);
   const [prevTempoData, setPrevTempoData] = useState<ActualsResponse | null>(null);
@@ -164,7 +181,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     recurring.forEach((i) => {
       const area = resolveAreaName(i.fields.project.key);
       recurringByArea[area] = (recurringByArea[area] ?? 0) + 1;
-      const name = i.fields.assignee?.displayName ?? '';
+      const name = formatDisplayName(i.fields.assignee?.displayName ?? '');
       if (name) {
         if (!recurringByPerson[name]) recurringByPerson[name] = [];
         if (recurringByPerson[name].length < 5) recurringByPerson[name].push(i.fields.summary.slice(0, 50));
@@ -172,11 +189,11 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     });
 
     const personCompleted: Record<string, number> = {};
-    doneInPeriod.forEach((i) => { const n = i.fields.assignee?.displayName ?? ''; if (n) personCompleted[n] = (personCompleted[n] ?? 0) + 1; });
+    doneInPeriod.forEach((i) => { const n = formatDisplayName(i.fields.assignee?.displayName ?? ''); if (n && i.fields.assignee?.active !== false) personCompleted[n] = (personCompleted[n] ?? 0) + 1; });
     const personStale: Record<string, number> = {};
-    stale.forEach((i) => { const n = i.fields.assignee?.displayName ?? ''; if (n) personStale[n] = (personStale[n] ?? 0) + 1; });
+    stale.forEach((i) => { const n = formatDisplayName(i.fields.assignee?.displayName ?? ''); if (n && i.fields.assignee?.active !== false) personStale[n] = (personStale[n] ?? 0) + 1; });
     const personOverdue: Record<string, number> = {};
-    overdue.forEach((i) => { const n = i.fields.assignee?.displayName ?? ''; if (n) personOverdue[n] = (personOverdue[n] ?? 0) + 1; });
+    overdue.forEach((i) => { const n = formatDisplayName(i.fields.assignee?.displayName ?? ''); if (n && i.fields.assignee?.active !== false) personOverdue[n] = (personOverdue[n] ?? 0) + 1; });
 
     const opsKeys = new Set(Object.keys(AREA_MAP));
     const areaTasks: Record<string, { total: number; done: number; inProgress: number; overdue: number; isDelivery: boolean; projects?: Record<string, { total: number; done: number; overdue: number }> }> = {};
@@ -363,10 +380,11 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     const ghostTasks = allIssuesCombined.filter((i) => {
       if (categorizeStatus(i.fields.status.name) !== 'inProgress') return false;
       if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
+      if (i.fields.assignee?.active === false) return false;
       const daysSinceUpdate = i.fields.updated ? Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000) : 999;
       return daysSinceUpdate >= 7 && !tempoIssueKeys.has(i.key);
     }).map((i) => ({
-      key: i.key, summary: i.fields.summary, assignee: i.fields.assignee?.displayName ?? 'Unassigned',
+      key: i.key, summary: i.fields.summary, assignee: formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned'),
       daysSilent: i.fields.updated ? Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000) : 999,
       project: i.fields.project.name,
     })).sort((a, b) => b.daysSilent - a.daysSilent);
@@ -392,8 +410,8 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     const tempoPeople = new Set(tempoData.people.map((p) => p.name));
     const jiraAssignees = new Set<string>();
     allIssuesCombined.forEach((i) => {
-      if (i.fields.assignee?.displayName && categorizeStatus(i.fields.status.name) !== 'done') {
-        jiraAssignees.add(i.fields.assignee.displayName);
+      if (i.fields.assignee?.displayName && i.fields.assignee?.active !== false && categorizeStatus(i.fields.status.name) !== 'done') {
+        jiraAssignees.add(formatDisplayName(i.fields.assignee.displayName));
       }
     });
     const zeroPeople = [...jiraAssignees].filter((n) => !tempoPeople.has(n)).sort();

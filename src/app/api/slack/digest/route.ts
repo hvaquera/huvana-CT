@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchJson, fetchTempoWorklogs, JIRA_BASE, JIRA_AUTH, OPS_PROJECTS, round } from '@/lib/api';
+import { formatDisplayName } from '@/lib/constants';
 import type { JiraIssue, JiraApiResponse } from '@/types';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -141,10 +142,11 @@ function buildMondayDigest(issues: JiraIssue[], tempoHours: number | null): obje
     return due >= today && due <= weekEnd;
   }).sort((a, b) => new Date(a.fields.duedate!).getTime() - new Date(b.fields.duedate!).getTime());
 
-  // Upcoming by person
+  // Upcoming by person (skip deactivated users)
   const personWork: Record<string, { tasks: string[]; count: number }> = {};
   dueThisWeek.forEach((i) => {
-    const name = i.fields.assignee?.displayName ?? 'Unassigned';
+    if (i.fields.assignee?.active === false) return;
+    const name = formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned');
     if (!personWork[name]) personWork[name] = { tasks: [], count: 0 };
     personWork[name].count++;
     if (personWork[name].tasks.length < 3) {
@@ -169,7 +171,7 @@ function buildMondayDigest(issues: JiraIssue[], tempoHours: number | null): obje
   if (overdue.length > 0) {
     const overdueLines = overdue.slice(0, 5).map((i) => {
       const days = daysBetween(today, new Date(i.fields.duedate!));
-      const assignee = i.fields.assignee?.displayName?.split(' ')[0] ?? 'Unassigned';
+      const assignee = formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned').split(' ')[0];
       return `• <${JIRA_BROWSE}/${i.key}|${i.key}> ${i.fields.summary.slice(0, 45)} — *${days}d late* (${assignee})`;
     });
     if (overdue.length > 5) overdueLines.push(`_...and ${overdue.length - 5} more_`);
@@ -189,7 +191,7 @@ function buildMondayDigest(issues: JiraIssue[], tempoHours: number | null): obje
   if (stale.length > 0) {
     const staleLines = stale.slice(0, 5).map((i) => {
       const days = daysBetween(today, new Date(i.fields.updated!));
-      const assignee = i.fields.assignee?.displayName?.split(' ')[0] ?? 'Unassigned';
+      const assignee = formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned').split(' ')[0];
       return `• <${JIRA_BROWSE}/${i.key}|${i.key}> ${i.fields.summary.slice(0, 45)} — *${days}d silent* (${assignee})`;
     });
     if (stale.length > 5) staleLines.push(`_...and ${stale.length - 5} more_`);
@@ -260,10 +262,11 @@ function buildFridayDigest(
     return new Date(changed) >= weekStart;
   });
 
-  // Completed by person
+  // Completed by person (skip deactivated users)
   const completedByPerson: Record<string, string[]> = {};
   completedThisWeek.forEach((i) => {
-    const name = i.fields.assignee?.displayName ?? 'Unassigned';
+    if (i.fields.assignee?.active === false) return;
+    const name = formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned');
     if (!completedByPerson[name]) completedByPerson[name] = [];
     if (completedByPerson[name].length < 3) {
       completedByPerson[name].push(`<${JIRA_BROWSE}/${i.key}|${i.key}> ${i.fields.summary.slice(0, 45)}`);

@@ -107,3 +107,16 @@ export function formatDueDate(duedate: string): { label: string; isOverdue: bool
     daysUntil,
   };
 }
+
+/**
+ * Normalize Jira display names.
+ * Converts "firstname.lastname" → "Firstname Lastname".
+ * Leaves proper names like "Hugo Vaquera" unchanged.
+ */
+export function formatDisplayName(name: string): string {
+  if (!name) return 'Unassigned';
+  if (!name.includes(' ') && name.includes('.')) {
+    return name.split('.').map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+  }
+  return name;
+}

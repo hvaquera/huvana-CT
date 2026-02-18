@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchTempoWorklogs, fetchJson, JIRA_BASE, JIRA_AUTH, round, withCache } from '@/lib/api';
+import { formatDisplayName } from '@/lib/constants';
 import type { ActualsResponse, ActualsPerson, ActualsProjectTotal } from '@/types';
 
 // ─── Issue Resolution ────────────────────────────────────────────────────────
@@ -121,7 +122,7 @@ export async function GET(request: Request) {
 
       for (const wl of worklogs) {
         const authorId = wl.author?.accountId ?? 'unknown';
-        const authorName = wl.author?.displayName || userCache.get(authorId) || authorId;
+        const authorName = formatDisplayName(wl.author?.displayName || userCache.get(authorId) || authorId);
         const hours = (wl.timeSpentSeconds ?? 0) / 3600;
         totalHours += hours;
 
