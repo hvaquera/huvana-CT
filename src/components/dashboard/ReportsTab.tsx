@@ -169,13 +169,11 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     const opsProjectKeys = new Set(Object.keys(AREA_MAP));
     const stale = inProgress.filter((i) => {
       if (!i.fields.updated) return false;
-      const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
-      const isOpsProject = opsProjectKeys.has(i.fields.project.key);
+      if (!i.fields.assignee) return false; // skip unassigned — no owner, not actionable
+      if (i.fields.assignee?.active === false) return false;
+      if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
       const daysSilent = Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000);
-
-      if (isEpic && isOpsProject) return false; // Ops epics: never stale
-      if (isEpic) return daysSilent >= 14; // Delivery epics: 14-day threshold
-      return daysSilent >= 3; // Regular tasks: 3-day threshold
+      return daysSilent >= 3 && daysSilent <= 90;
     });
 
     // Recurring breakdown by area and person
@@ -195,7 +193,8 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     doneInPeriod.forEach((i) => { const n = formatDisplayName(i.fields.assignee?.displayName ?? ''); if (n && i.fields.assignee?.active !== false) personCompleted[n] = (personCompleted[n] ?? 0) + 1; });
     const personStale: Record<string, Array<{ key: string; summary: string; project: string; daysSilent: number }>> = {};
     stale.forEach((i) => {
-      const n = formatDisplayName(i.fields.assignee?.displayName ?? '') || 'Unassigned';
+      const n = formatDisplayName(i.fields.assignee?.displayName ?? '');
+      if (!n) return; // skip unassigned — no owner, not actionable
       if (i.fields.assignee?.active === false) return;
       if (!personStale[n]) personStale[n] = [];
       const daysSilent = Math.floor((Date.now() - new Date(i.fields.updated!).getTime()) / 86400000);

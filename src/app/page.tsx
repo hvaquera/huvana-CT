@@ -128,12 +128,9 @@ export default function Dashboard() {
       if (categorizeStatus(i.fields.status.name) !== 'inProgress') return false;
       if (!i.fields.updated) return false;
       if (i.fields.assignee?.active === false) return false;
-      const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
-      const isOps = opsProjectKeys.has(i.fields.project.key);
+      if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false; // epics are containers, not tasks
       const daysSince = Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000);
-      if (isEpic && isOps) return false; // Ops epics: never stale
-      if (isEpic) return daysSince >= 14; // Delivery epics: 14-day threshold
-      return daysSince >= 3; // Regular tasks: 3 days
+      return daysSince >= 3 && daysSince <= 90;
     });
   }, [areaIssues]);
 
