@@ -43,7 +43,7 @@ export async function GET() {
       // Include ALL statuses but only tasks updated in last 90 days to avoid ancient noise
       const results = await Promise.allSettled(
         clientProjects.map(async (proj) => {
-          const jql = `project = "${proj.key}" AND updated >= -90d ORDER BY updated DESC`;
+          const jql = `project = "${proj.key}" AND updated >= -90d AND issuetype != Epic ORDER BY updated DESC`;
           const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=100&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate`;
           return fetchJson<JiraSearchResponse>(url, {
             Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json',
