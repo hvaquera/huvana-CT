@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchJson, fetchTempoWorklogs, JIRA_BASE, JIRA_AUTH, OPS_PROJECTS, round } from '@/lib/api';
 import { formatDisplayName } from '@/lib/constants';
-import { supabase } from '@/lib/supabase';
 import type { JiraIssue, JiraApiResponse } from '@/types';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -22,6 +21,18 @@ interface JiraSearchResponse {
   total: number;
 }
 
+interface JiraProject {
+  key: string;
+  name: string;
+  archived?: boolean;
+}
+
+interface TempoWeekData {
+  total: number;
+  byPerson: Record<string, number>;
+  byProject: Record<string, number>;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function categorize(statusName: string): string {
@@ -36,476 +47,498 @@ function daysBetween(d1: Date, d2: Date): number {
   return Math.floor((d1.getTime() - d2.getTime()) / 86400000);
 }
 
-function getWeekRange(): { from: string; to: string; fromDate: Date; toDate: Date } {
-  const now = new Date();
-  const day = now.getDay();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
-  monday.setHours(0, 0, 0, 0);
-  const friday = new Date(monday);
-  friday.setDate(monday.getDate() + 4);
-  friday.setHours(23, 59, 59, 999);
-  return {
-    from: monday.toISOString().split('T')[0],
-    to: friday.toISOString().split('T')[0],
-    fromDate: monday,
-    toDate: friday,
-  };
-}
-
 function resolveArea(projectKey: string): string {
   return AREA_MAP[projectKey] ?? projectKey;
 }
 
-// ─── Data Fetching ───────────────────────────────────────────────────────────
+// ─── Jira Data Fetching ───────────────────────────────────────────────────────
 
-/** Fetch active delivery project keys from Supabase PSA board */
-async function fetchActiveDeliveryKeys(): Promise<Set<string>> {
+const FIELDS = 'summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate';
+
+/**
+ * Fetch ops issues — same pattern as /api/jira/route.ts (two parallel JQL queries).
+ */
+async function fetchOpsIssues(): Promise<JiraIssue[]> {
+  const projectList = OPS_PROJECTS.join(', ');
   try {
-    const { data, error } = await supabase
-      .from('projects')
-      .select('jira_key, status')
-      .eq('status', 'active');
-
-    if (error) throw error;
-    const keys = new Set<string>();
-    (data ?? []).forEach((p: { jira_key: string | null }) => {
-      if (p.jira_key) keys.add(p.jira_key);
-    });
-    console.log(`[Digest] Active delivery projects from Supabase: ${keys.size} (${[...keys].join(', ')})`);
-    return keys;
+    const [activeData, doneData] = await Promise.all([
+      fetchJson<JiraSearchResponse>(
+        `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(
+          `project in (${projectList}) AND statusCategory != Done ORDER BY updated DESC`
+        )}&maxResults=200&fields=${FIELDS}`,
+        { Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json' },
+      ),
+      fetchJson<JiraSearchResponse>(
+        `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(
+          `project in (${projectList}) AND statusCategory = Done AND updated >= -90d ORDER BY updated DESC`
+        )}&maxResults=200&fields=${FIELDS}`,
+        { Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json' },
+      ),
+    ]);
+    return [...activeData.issues, ...doneData.issues];
   } catch (err) {
-    console.error('[Digest] Supabase fetch error:', err);
-    return new Set(); // fallback: empty set means no delivery filtering
+    console.error('[Digest] Failed to fetch ops issues:', err);
+    return [];
   }
 }
 
-async function fetchAllJiraIssues(): Promise<JiraIssue[]> {
-  const allIssues: JiraIssue[] = [];
-
-  // Ops projects
-  for (const project of OPS_PROJECTS) {
-    try {
-      const jql = `project = ${project} ORDER BY created DESC`;
-      const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=100&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate`;
-      const data = await fetchJson<JiraSearchResponse>(url, {
-        Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json',
-      });
-      allIssues.push(...data.issues);
-    } catch (err) {
-      console.error(`[Digest] Failed to fetch ${project}:`, err);
-    }
-  }
-
-  // Delivery projects
+/**
+ * Fetch delivery issues — same pattern as /api/jira/delivery/route.ts.
+ * Discovers projects from Jira directly (no Supabase dependency).
+ * Uses Promise.allSettled so one bad project doesn't kill others.
+ * Returns issues + the project list for building the name map.
+ */
+async function fetchDeliveryIssues(): Promise<{ issues: JiraIssue[]; projects: JiraProject[] }> {
   try {
-    interface JiraProject { key: string; name: string; archived?: boolean }
-    const projects = await fetchJson<JiraProject[]>(
+    const allProjects = await fetchJson<JiraProject[]>(
       `${JIRA_BASE}/rest/api/3/project`,
       { Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json' },
     );
+
     const opsSet = new Set<string>(OPS_PROJECTS);
-    const clientProjects = projects.filter((p) => !opsSet.has(p.key) && !p.archived);
+    const clientProjects = allProjects.filter((p) => !opsSet.has(p.key) && !p.archived);
 
     const results = await Promise.allSettled(
       clientProjects.map(async (proj) => {
-        const jql = `project = "${proj.key}" AND statusCategory != Done ORDER BY duedate ASC`;
-        const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate`;
-        return fetchJson<JiraSearchResponse>(url, {
+        const jql = `project = "${proj.key}" AND statusCategory != Done ORDER BY duedate ASC, updated DESC`;
+        const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=${FIELDS}`;
+        const data = await fetchJson<JiraSearchResponse>(url, {
           Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json',
         });
+        return { project: proj, issues: data.issues };
       }),
     );
+
+    const issues: JiraIssue[] = [];
+    const activeProjects: JiraProject[] = [];
     for (const r of results) {
-      if (r.status === 'fulfilled') allIssues.push(...r.value.issues);
+      if (r.status === 'fulfilled' && r.value.issues.length > 0) {
+        issues.push(...r.value.issues);
+        activeProjects.push(r.value.project);
+      }
     }
+
+    return { issues, projects: activeProjects };
   } catch (err) {
-    console.error('[Digest] Failed to fetch delivery projects:', err);
+    console.error('[Digest] Failed to fetch delivery issues:', err);
+    return { issues: [], projects: [] };
+  }
+}
+
+// ─── Tempo Data Fetching ──────────────────────────────────────────────────────
+
+/**
+ * Resolve Tempo issue IDs to project keys — same bulk JQL approach as
+ * /api/tempo/actuals/route.ts, which is how the app already solved the
+ * "unlinked" problem. Tempo v4 returns issue.id (not issue.key), so we
+ * must resolve IDs to keys ourselves.
+ */
+async function resolveIssueIds(issueIds: string[]): Promise<Map<string, string>> {
+  // id → projectKey
+  const cache = new Map<string, string>();
+  const BATCH_SIZE = 50;
+
+  for (let i = 0; i < issueIds.length; i += BATCH_SIZE) {
+    const batch = issueIds.slice(i, i + BATCH_SIZE);
+    try {
+      const data = await fetchJson<{ issues: Array<{ id: string; fields: { project: { key: string } } }> }>(
+        `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(`id in (${batch.join(',')})`)}&maxResults=${BATCH_SIZE}&fields=project`,
+        { Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json' },
+      );
+      for (const issue of data.issues) {
+        cache.set(String(issue.id), issue.fields.project.key);
+      }
+    } catch (err) {
+      console.error(`[Digest] resolveIssueIds batch failed:`, err);
+    }
   }
 
-  return allIssues;
+  return cache;
 }
 
-// ─── Shared Health Computation ───────────────────────────────────────────────
-
-interface HealthResult {
-  overdue: JiraIssue[];
-  stale: JiraIssue[];
-  inProgress: JiraIssue[];
-  total: number;
-}
-
-function computeHealth(items: JiraIssue[], today: Date): HealthResult {
-  const overdue = items.filter((i) => {
-    if (!i.fields.duedate) return false;
-    const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
-    return due < today;
-  });
-  const stale = items.filter((i) => {
-    if (categorize(i.fields.status.name) !== 'inProgress') return false;
-    if (!i.fields.updated) return false;
-    return daysBetween(today, new Date(i.fields.updated)) >= 3;
-  });
-  const inProgress = items.filter((i) => categorize(i.fields.status.name) === 'inProgress');
-  return { overdue, stale, inProgress, total: items.length };
-}
-
-function healthVerdict(h: HealthResult): { emoji: string; label: string } {
-  if (h.total === 0) return { emoji: '⚪', label: 'No active tasks' };
-  if (h.overdue.length >= 3 || h.stale.length >= 3) return { emoji: '🔴', label: 'Action needed' };
-  if (h.overdue.length > 0 || h.stale.length > 0) return { emoji: '🟡', label: 'Needs attention' };
-  return { emoji: '🟢', label: 'On track' };
-}
-
-function worstOffender(h: HealthResult, today: Date): string {
-  if (h.overdue.length > 0) {
-    const worst = [...h.overdue].sort((a, b) => new Date(a.fields.duedate!).getTime() - new Date(b.fields.duedate!).getTime())[0];
-    const days = daysBetween(today, new Date(worst.fields.duedate!));
-    const who = formatDisplayName(worst.fields.assignee?.displayName ?? 'Unassigned').split(' ')[0];
-    return `_Overdue ${days}d: <${JIRA_BROWSE}/${worst.key}|${worst.fields.summary.slice(0, 40)}> (${who})_`;
+/**
+ * Resolve account IDs to display names — same approach as actuals route.
+ * Falls back to accountId string if Jira lookup fails.
+ */
+async function resolveUserNames(accountIds: string[]): Promise<Map<string, string>> {
+  const cache = new Map<string, string>();
+  const results = await Promise.allSettled(
+    accountIds.map(async (accountId) => {
+      const data = await fetchJson<{ displayName: string }>(
+        `${JIRA_BASE}/rest/api/2/user?accountId=${accountId}`,
+        { Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json' },
+      );
+      return { accountId, displayName: data.displayName };
+    }),
+  );
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      cache.set(r.value.accountId, r.value.displayName);
+    }
   }
-  if (h.stale.length > 0) {
-    const worst = [...h.stale].sort((a, b) => new Date(a.fields.updated!).getTime() - new Date(b.fields.updated!).getTime())[0];
-    const days = daysBetween(today, new Date(worst.fields.updated!));
-    const who = formatDisplayName(worst.fields.assignee?.displayName ?? 'Unassigned').split(' ')[0];
-    return `_Stale ${days}d: <${JIRA_BROWSE}/${worst.key}|${worst.fields.summary.slice(0, 40)}> (${who})_`;
-  }
-  return '';
+  return cache;
 }
 
-// ─── Monday Digest Builder ───────────────────────────────────────────────────
+/**
+ * Fetch and aggregate Tempo hours for a given week.
+ * weeksBack = 0 → current week, 1 → last week.
+ *
+ * Uses the same ID-based resolution as /api/tempo/actuals/route.ts to fix the
+ * (unlinked) / "1 person" bug — Tempo v4 never returns issue.key or
+ * author.displayName directly, so we resolve them via Jira.
+ */
+async function fetchTempoWeekData(weeksBack: number): Promise<TempoWeekData | null> {
+  try {
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1) - weeksBack * 7);
+    monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+
+    const from = monday.toISOString().split('T')[0];
+    const to = sunday.toISOString().split('T')[0];
+
+    const worklogs = await fetchTempoWorklogs(from, to);
+    if (worklogs.length === 0) return { total: 0, byPerson: {}, byProject: {} };
+
+    // Resolve issue IDs → project keys
+    const allIssueIds = [...new Set(worklogs.map((w) => w.issue?.id).filter(Boolean).map(String))];
+    const issueToProject = await resolveIssueIds(allIssueIds);
+
+    // Resolve account IDs → display names (for any without displayName)
+    const allAccountIds = [...new Set(worklogs.map((w) => w.author?.accountId).filter(Boolean))] as string[];
+    const userNames = await resolveUserNames(allAccountIds);
+
+    let total = 0;
+    // Key by accountId to deduplicate correctly, same as /api/tempo/route.ts
+    const personMap = new Map<string, { name: string; hours: number }>();
+    const byProject: Record<string, number> = {};
+
+    for (const wl of worklogs) {
+      const hours = (wl.timeSpentSeconds ?? 0) / 3600;
+      total += hours;
+
+      // Person
+      const accountId = wl.author?.accountId ?? 'unknown';
+      const displayName = wl.author?.displayName || userNames.get(accountId) || accountId;
+      const existing = personMap.get(accountId);
+      if (existing) {
+        existing.hours += hours;
+      } else {
+        personMap.set(accountId, { name: formatDisplayName(displayName), hours });
+      }
+
+      // Project — resolve via issue ID, same as actuals route
+      if (wl.issue?.id) {
+        const projKey = issueToProject.get(String(wl.issue.id));
+        if (projKey) {
+          byProject[projKey] = (byProject[projKey] ?? 0) + hours;
+        }
+        // unlinked (unresolved) hours still count toward total but not byProject
+      }
+    }
+
+    // Flatten personMap to name-keyed record for block builder
+    const byPerson: Record<string, number> = {};
+    for (const [, { name, hours }] of personMap) {
+      byPerson[name] = (byPerson[name] ?? 0) + hours;
+    }
+
+    return { total, byPerson, byProject };
+  } catch (err) {
+    console.error('[Digest] Tempo fetch error:', err);
+    return null;
+  }
+}
+
+// ─── Monday Digest ────────────────────────────────────────────────────────────
 
 function buildMondayDigest(
-  issues: JiraIssue[],
-  tempoData: { current: { total: number; byPerson: Record<string, number>; byProject: Record<string, number> }; previous: { total: number; byPerson: Record<string, number>; byProject: Record<string, number> } } | null,
-  activeDeliveryKeys: Set<string>,
+  opsIssues: JiraIssue[],
+  deliveryIssues: JiraIssue[],
+  deliveryProjectNames: Record<string, string>,
+  tempoLastWeek: TempoWeekData | null,
 ): object[] {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const weekEnd = new Date(today);
   weekEnd.setDate(today.getDate() + (5 - (today.getDay() || 7)));
-  const opsKeys = new Set<string>(OPS_PROJECTS);
 
-  // ── Filter: skip epics, done, recurring, deactivated ──
-  const allActive = issues.filter((i) => {
-    const s = categorize(i.fields.status.name);
-    if (s === 'done' || s === 'recurring') return false;
-    if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
-    if (i.fields.assignee?.active === false) return false;
-    return true;
-  });
-
-  // ── Split: ops vs delivery (delivery = only Supabase active projects) ──
-  const opsIssues = allActive.filter((i) => opsKeys.has(i.fields.project.key));
-  const deliveryIssues = activeDeliveryKeys.size > 0
-    ? allActive.filter((i) => !opsKeys.has(i.fields.project.key) && activeDeliveryKeys.has(i.fields.project.key))
-    : []; // If Supabase returns nothing, show no delivery (don't fallback to all)
-  const active = [...opsIssues, ...deliveryIssues];
-
-  // ── Map project keys to area for Tempo hours lookup ──
-  const areaProjectKeys: Record<string, string[]> = {
-    'Legal': OPS_PROJECTS.filter((k) => resolveArea(k) === 'Legal'),
-    'Finance': OPS_PROJECTS.filter((k) => resolveArea(k) === 'Finance'),
-    'GTM & Sales': OPS_PROJECTS.filter((k) => resolveArea(k) === 'GTM & Sales'),
-    'Operations': OPS_PROJECTS.filter((k) => resolveArea(k) === 'Operations'),
-  };
-
-  // ── Ops per-area data ──
-  const opsAreas = ['Legal', 'Finance', 'GTM & Sales', 'Operations'] as const;
-  type OpsAreaRow = {
-    overdue: number;
-    worstOverdueDays: number;
-    dueThisWeek: number;
-    hoursLastWeek: number;
-    stale: number;
-    signal: string;
-  };
-  const opsRows: Record<string, OpsAreaRow> = {};
-
-  for (const area of opsAreas) {
-    const areaIssues = opsIssues.filter((i) => resolveArea(i.fields.project.key) === area);
-
-    const overdueList = areaIssues.filter((i) => {
-      if (!i.fields.duedate) return false;
-      const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
-      return due < today;
+  /**
+   * Bug fix — deactivated users: filter at the source before any counting,
+   * not just in the display loops. Mirrors how the ops tab works.
+   */
+  const filterActive = (issues: JiraIssue[]): JiraIssue[] =>
+    issues.filter((i) => {
+      const s = categorize(i.fields.status.name);
+      if (s === 'done' || s === 'recurring') return false;
+      if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false; // epics are containers, not tasks
+      if (!i.fields.assignee) return false;               // unassigned = no owner, not actionable
+      if (i.fields.assignee.active === false) return false; // deactivated user
+      return true;
     });
 
-    const worstDays = overdueList.length > 0
-      ? Math.max(...overdueList.map((i) => daysBetween(today, new Date(i.fields.duedate!))))
-      : 0;
+  const activeOps = filterActive(opsIssues);
+  const activeDelivery = filterActive(deliveryIssues);
+  const allActive = [...activeOps, ...activeDelivery];
 
-    const dueThisWeek = areaIssues.filter((i) => {
+  const recurringCount = [...opsIssues, ...deliveryIssues].filter(
+    (i) => categorize(i.fields.status.name) === 'recurring',
+  ).length;
+
+  // ── Overdue ──
+  const overdue = allActive
+    .filter((i) => {
+      if (!i.fields.duedate) return false;
+      const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
+      const daysLate = daysBetween(today, due);
+      return due < today && daysLate <= 90; // 90-day cap: ancient overdue = not actionable signal
+    })
+    .sort((a, b) => new Date(a.fields.duedate!).getTime() - new Date(b.fields.duedate!).getTime());
+
+  // ── Stale ──
+  const opsKeys = new Set<string>(OPS_PROJECTS);
+  const stale = allActive
+    .filter((i) => {
+      if (categorize(i.fields.status.name) !== 'inProgress') return false;
+      if (!i.fields.updated) return false;
+      const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
+      const isOps = opsKeys.has(i.fields.project.key);
+      const days = daysBetween(today, new Date(i.fields.updated));
+      if (days > 90) return false;         // older than 90 days = archaeology, not signal
+      if (isEpic && isOps) return false;   // ops epics move slowly, skip
+      if (isEpic) return days >= 14;       // delivery epics: 14-day threshold
+      return days >= 3;                    // everything else: 3 days
+    })
+    .sort((a, b) => new Date(a.fields.updated!).getTime() - new Date(b.fields.updated!).getTime());
+
+  // ── Due this week ──
+  const dueThisWeek = allActive
+    .filter((i) => {
+      if (!i.fields.duedate) return false;
+      const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
+      return due >= today && due <= weekEnd;
+    })
+    .sort((a, b) => new Date(a.fields.duedate!).getTime() - new Date(b.fields.duedate!).getTime());
+
+  // ── Due this week — grouped by person ──
+  const personWork: Record<string, { tasks: string[]; count: number }> = {};
+  dueThisWeek.forEach((i) => {
+    if (i.fields.assignee?.active === false) return; // belt-and-suspenders
+    const name = formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned');
+    if (!personWork[name]) personWork[name] = { tasks: [], count: 0 };
+    personWork[name].count++;
+    if (personWork[name].tasks.length < 3) {
+      personWork[name].tasks.push(`<${JIRA_BROWSE}/${i.key}|${i.key}> ${i.fields.summary.slice(0, 50)}`);
+    }
+  });
+
+  // ── Ops area breakdown ──
+  const areaProjectMap: Record<string, string[]> = {
+    Legal: ['VBTLEGAL'], Finance: ['VBTFINANCE'], 'GTM & Sales': ['VBTGTM'], Operations: ['VBTOP'],
+  };
+  const opsAreas = ['Legal', 'Finance', 'GTM & Sales', 'Operations'] as const;
+
+  // ── Delivery per-project ──
+  const deliveryMap = new Map<string, { name: string; issues: JiraIssue[] }>();
+  activeDelivery.forEach((i) => {
+    const key = i.fields.project.key;
+    if (!deliveryMap.has(key)) {
+      deliveryMap.set(key, { name: deliveryProjectNames[key] ?? i.fields.project.name, issues: [] });
+    }
+    deliveryMap.get(key)!.issues.push(i);
+  });
+
+  type DeliveryRow = { name: string; key: string; active: number; overdue: number; stale: number; hours: number; signal: string };
+  const deliveryRows: DeliveryRow[] = [];
+  deliveryMap.forEach(({ name, issues }, key) => {
+    const overdueCount = issues.filter((i) => {
+      if (!i.fields.duedate) return false;
+      const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
+      const daysLate = daysBetween(today, due);
+      return due < today && daysLate <= 90;
+    }).length;
+    const staleCount = issues.filter((i) => {
+      if (categorize(i.fields.status.name) !== 'inProgress' || !i.fields.updated) return false;
+      const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
+      const days = daysBetween(today, new Date(i.fields.updated));
+      if (days > 90) return false;
+      return isEpic ? days >= 14 : days >= 3;
+    }).length;
+    const hours = tempoLastWeek ? (tempoLastWeek.byProject[key] ?? 0) : 0;
+    let signal = '🟢';
+    if (overdueCount >= 3 || staleCount >= 3) signal = '🔴';
+    else if (overdueCount > 0 || staleCount > 0) signal = '🟡';
+    deliveryRows.push({ name, key, active: issues.length, overdue: overdueCount, stale: staleCount, hours, signal });
+  });
+  deliveryRows.sort((a, b) => (b.overdue + b.stale) - (a.overdue + a.stale) || b.active - a.active);
+
+  // ── Timesheet adoption — ops team only ──
+  let timesheetLine = '';
+  if (tempoLastWeek) {
+    const opsAssignees = new Set<string>();
+    activeOps.forEach((i) => {
+      if (i.fields.assignee?.displayName) opsAssignees.add(i.fields.assignee.displayName);
+    });
+    const tempoLoggers = new Set(Object.keys(tempoLastWeek.byPerson));
+    const logging = [...opsAssignees].filter((n) => tempoLoggers.has(n));
+    const notLogging = [...opsAssignees]
+      .filter((n) => !tempoLoggers.has(n))
+      .map((n) => formatDisplayName(n).split(' ')[0]);
+    const pct = opsAssignees.size > 0 ? Math.round((logging.length / opsAssignees.size) * 100) : 100;
+    if (notLogging.length === 0) {
+      timesheetLine = `📊 Ops timesheet adoption: *100%* ✓`;
+    } else if (notLogging.length <= 6) {
+      timesheetLine = `📊 Ops timesheet adoption: *${pct}%* (${logging.length}/${opsAssignees.size}) — not logging: ${notLogging.join(', ')}`;
+    } else {
+      timesheetLine = `📊 Ops timesheet adoption: *${pct}%* (${logging.length}/${opsAssignees.size}) — ${notLogging.length} not logging`;
+    }
+  }
+
+  // ── Overall verdict ──
+  const totalOverdue = overdue.length;
+  const totalStale = stale.length;
+  let overallEmoji: string;
+  let overallVerdict: string;
+  if (totalOverdue >= 5 || totalStale >= 8) { overallEmoji = '🔴'; overallVerdict = 'Needs Intervention'; }
+  else if (totalOverdue >= 3 || totalStale >= 4) { overallEmoji = '🟡'; overallVerdict = 'Some Friction'; }
+  else if (totalOverdue > 0 || totalStale > 0) { overallEmoji = '🟡'; overallVerdict = 'Mostly Healthy'; }
+  else { overallEmoji = '🟢'; overallVerdict = 'Running Smooth'; }
+
+  // ── Build blocks ──
+  const dateStr = today.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  const blocks: object[] = [
+    { type: 'header', text: { type: 'plain_text', text: `${overallEmoji} Weekly Pulse — ${overallVerdict}`, emoji: true } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `Week of ${dateStr}` }] },
+    { type: 'divider' },
+  ];
+
+  // Section 1: OPS SNAPSHOT
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '*📋 Ops Snapshot*' } });
+
+  for (const area of opsAreas) {
+    const keys = areaProjectMap[area];
+    const areaIssues = activeOps.filter((i) => keys.includes(i.fields.project.key));
+    const areaOverdue = areaIssues.filter((i) => {
+      if (!i.fields.duedate) return false;
+      const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
+      const daysLate = daysBetween(today, due);
+      return due < today && daysLate <= 90;
+    });
+    const worstDays = areaOverdue.length > 0
+      ? Math.max(...areaOverdue.map((i) => daysBetween(today, new Date(i.fields.duedate!))))
+      : 0;
+    const dueCount = areaIssues.filter((i) => {
       if (!i.fields.duedate) return false;
       const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
       return due >= today && due <= weekEnd;
     }).length;
-
     const staleCount = areaIssues.filter((i) => {
-      if (categorize(i.fields.status.name) !== 'inProgress') return false;
-      if (!i.fields.updated) return false;
-      return daysBetween(today, new Date(i.fields.updated)) >= 3;
+      if (categorize(i.fields.status.name) !== 'inProgress' || !i.fields.updated) return false;
+      const days = daysBetween(today, new Date(i.fields.updated));
+      return days >= 3 && days <= 90; // 90-day cap: older = archaeology not signal
     }).length;
+    const areaHours = tempoLastWeek
+      ? keys.reduce((sum, k) => sum + (tempoLastWeek.byProject[k] ?? 0), 0)
+      : 0;
 
-    // Tempo hours for this area
-    let hoursLastWeek = 0;
-    if (tempoData) {
-      const projKeys = areaProjectKeys[area] ?? [];
-      for (const pk of projKeys) {
-        hoursLastWeek += tempoData.current.byProject[pk] ?? 0;
-      }
-    }
-
-    // Signal
     let signal = '🟢';
-    if (overdueList.length >= 3 || staleCount >= 3) signal = '🔴';
-    else if (overdueList.length > 0 || staleCount > 0) signal = '🟡';
-
-    opsRows[area] = { overdue: overdueList.length, worstOverdueDays: worstDays, dueThisWeek, hoursLastWeek, stale: staleCount, signal };
-  }
-
-  // ── Delivery per-project data ──
-  const deliveryProjects = new Map<string, { name: string; issues: JiraIssue[] }>();
-  deliveryIssues.forEach((i) => {
-    const key = i.fields.project.key;
-    if (!deliveryProjects.has(key)) {
-      deliveryProjects.set(key, { name: i.fields.project.name ?? key, issues: [] });
-    }
-    deliveryProjects.get(key)!.issues.push(i);
-  });
-
-  type DeliveryRow = {
-    name: string;
-    key: string;
-    active: number;
-    overdue: number;
-    stale: number;
-    hoursLastWeek: number;
-    signal: string;
-  };
-
-  const deliveryRows: DeliveryRow[] = [];
-  deliveryProjects.forEach((val, key) => {
-    const h = computeHealth(val.issues, today);
-    const v = healthVerdict(h);
-    const hours = tempoData ? (tempoData.current.byProject[key] ?? 0) : 0;
-    deliveryRows.push({
-      name: val.name,
-      key,
-      active: h.total,
-      overdue: h.overdue.length,
-      stale: h.stale.length,
-      hoursLastWeek: hours,
-      signal: v.emoji,
-    });
-  });
-  // Sort: problems first, then by active count
-  deliveryRows.sort((a, b) => (b.overdue + b.stale) - (a.overdue + a.stale) || b.active - a.active);
-
-  // ── Timesheet Adoption ──
-  let timesheetAdoption = '';
-  if (tempoData) {
-    // People who logged time last week
-    const loggers = new Set(Object.keys(tempoData.current.byPerson));
-    // All unique active assignees across all active issues
-    const allAssignees = new Set<string>();
-    active.forEach((i) => {
-      if (i.fields.assignee && i.fields.assignee.active !== false && i.fields.assignee.displayName) {
-        allAssignees.add(i.fields.assignee.displayName);
-      }
-    });
-    const totalActive = allAssignees.size;
-    const totalLogging = [...allAssignees].filter((name) => loggers.has(name)).length;
-    const notLogging = [...allAssignees].filter((name) => !loggers.has(name)).map((n) => formatDisplayName(n).split(' ')[0]);
-    const pct = totalActive > 0 ? Math.round((totalLogging / totalActive) * 100) : 0;
-
-    if (notLogging.length > 0 && notLogging.length <= 8) {
-      timesheetAdoption = `📊 Timesheet adoption: *${pct}%* (${totalLogging}/${totalActive}) — not logging: ${notLogging.join(', ')}`;
-    } else if (notLogging.length > 8) {
-      timesheetAdoption = `📊 Timesheet adoption: *${pct}%* (${totalLogging}/${totalActive}) — ${notLogging.length} people not logging`;
-    } else {
-      timesheetAdoption = `📊 Timesheet adoption: *${pct}%* — all active team members logging ✓`;
-    }
-  }
-
-  // ── Stale summary ──
-  const staleSummary: string[] = [];
-  for (const area of opsAreas) {
-    if (opsRows[area].stale > 0) staleSummary.push(`${area}: ${opsRows[area].stale}`);
-  }
-  // Delivery stale per project
-  const deliveryStaleParts: string[] = [];
-  for (const row of deliveryRows) {
-    if (row.stale > 0) deliveryStaleParts.push(`${row.name}: ${row.stale}`);
-  }
-
-  const totalOpsStale = opsAreas.reduce((sum, a) => sum + opsRows[a].stale, 0);
-  const totalDeliveryStale = deliveryRows.reduce((sum, r) => sum + r.stale, 0);
-
-  // ── Overall Verdict ──
-  const totalOverdue = opsAreas.reduce((sum, a) => sum + opsRows[a].overdue, 0) + deliveryRows.reduce((sum, r) => sum + r.overdue, 0);
-  const totalStale = totalOpsStale + totalDeliveryStale;
-  const criticalOverdue = [...opsIssues, ...deliveryIssues].filter((i) => {
-    if (!i.fields.duedate) return false;
-    const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
-    return due < today && daysBetween(today, due) >= 7;
-  }).length;
-
-  let overallEmoji: string;
-  let overallVerdict: string;
-  if (criticalOverdue >= 3 || totalStale >= 5) {
-    overallEmoji = '🔴'; overallVerdict = 'Needs Intervention';
-  } else if (totalOverdue >= 3 || totalStale >= 3) {
-    overallEmoji = '🟡'; overallVerdict = 'Some Friction';
-  } else if (totalOverdue > 0 || totalStale > 0) {
-    overallEmoji = '🟡'; overallVerdict = 'Mostly Healthy';
-  } else {
-    overallEmoji = '🟢'; overallVerdict = 'Running Smooth';
-  }
-
-  // ════════════════════════════════════════
-  // BUILD SLACK BLOCKS
-  // ════════════════════════════════════════
-  const dateStr = today.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-  const blocks: object[] = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: `${overallEmoji} Weekly Pulse — ${overallVerdict}`, emoji: true },
-    },
-    {
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `Week of ${dateStr}` }],
-    },
-    { type: 'divider' },
-  ];
-
-  // ── SECTION 1: OPS SNAPSHOT ──
-  blocks.push({
-    type: 'section',
-    text: { type: 'mrkdwn', text: '*📋 Ops Snapshot*' },
-  });
-
-  for (const area of opsAreas) {
-    const r = opsRows[area];
-    if (r.overdue === 0 && r.dueThisWeek === 0 && r.stale === 0 && r.hoursLastWeek === 0) continue;
+    if (areaOverdue.length >= 3 || staleCount >= 3) signal = '🔴';
+    else if (areaOverdue.length > 0 || staleCount > 0) signal = '🟡';
 
     const parts: string[] = [];
-    if (r.overdue > 0) parts.push(`*${r.overdue} overdue* (${r.worstOverdueDays}d)`);
-    else parts.push('0 overdue');
-    parts.push(`${r.dueThisWeek} due this week`);
-    if (tempoData) parts.push(`${round(r.hoursLastWeek)}h logged`);
+    if (areaOverdue.length > 0) parts.push(`*${areaOverdue.length} overdue* (${worstDays}d)`);
+    if (staleCount > 0) parts.push(`*${staleCount} stale*`);
+    if (areaOverdue.length === 0 && staleCount === 0) parts.push('✓ clean');
+    parts.push(`${dueCount} due this week`);
+    if (tempoLastWeek) parts.push(`${round(areaHours)}h last week`);
 
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `${r.signal}  *${area}*\n      ${parts.join('  •  ')}` },
-    });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `${signal}  *${area}*\n      ${parts.join('  •  ')}` } });
   }
 
   blocks.push({ type: 'divider' });
 
-  // ── SECTION 2: OPERATIONAL HEALTH ──
-  blocks.push({
-    type: 'section',
-    text: { type: 'mrkdwn', text: '*🏥 Operational Health*' },
-  });
+  // Section 2: OPERATIONAL HEALTH
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '*🏥 Operational Health*' } });
 
   const healthLines: string[] = [];
 
-  // Stale tasks
-  if (totalOpsStale > 0 || totalDeliveryStale > 0) {
-    if (totalOpsStale > 0) {
-      healthLines.push(`⚠️ *${totalOpsStale} stale in Ops* (${staleSummary.join(', ')})`);
-    }
-    if (totalDeliveryStale > 0) {
-      const topStale = deliveryStaleParts.slice(0, 5);
-      const remaining = deliveryStaleParts.length - 5;
-      let staleText = `⚠️ *${totalDeliveryStale} stale in Delivery* (${topStale.join(', ')}`;
-      if (remaining > 0) staleText += `, +${remaining} more`;
-      staleText += ')';
-      healthLines.push(staleText);
-    }
+  if (overdue.length > 0) {
+    const lines = overdue.slice(0, 5).map((i) => {
+      const days = daysBetween(today, new Date(i.fields.duedate!));
+      const assignee = formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned').split(' ')[0];
+      return `• <${JIRA_BROWSE}/${i.key}|${i.key}> ${i.fields.summary.slice(0, 45)} — *${days}d late* (${assignee})`;
+    });
+    if (overdue.length > 5) lines.push(`_...and ${overdue.length - 5} more_`);
+    healthLines.push(`🔴 *Overdue (${overdue.length})*\n${lines.join('\n')}`);
   } else {
-    healthLines.push('✅ No stale tasks — everything is moving');
+    healthLines.push('✅ *No overdue tasks* — clean slate!');
   }
 
-  // Timesheet adoption
-  if (timesheetAdoption) healthLines.push(timesheetAdoption);
+  if (stale.length > 0) {
+    const lines = stale.slice(0, 5).map((i) => {
+      const days = daysBetween(today, new Date(i.fields.updated!));
+      const assignee = formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned').split(' ')[0];
+      return `• <${JIRA_BROWSE}/${i.key}|${i.key}> ${i.fields.summary.slice(0, 45)} — *${days}d silent* (${assignee})`;
+    });
+    if (stale.length > 5) lines.push(`_...and ${stale.length - 5} more_`);
+    healthLines.push(`🟡 *Stale — No Updates in 3+ Days (${stale.length})*\n${lines.join('\n')}`);
+  }
 
-  blocks.push({
-    type: 'section',
-    text: { type: 'mrkdwn', text: healthLines.join('\n\n') },
-  });
+  if (timesheetLine) healthLines.push(timesheetLine);
 
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: healthLines.join('\n\n') } });
   blocks.push({ type: 'divider' });
 
-  // ── SECTION 3: DELIVERY ──
-  blocks.push({
-    type: 'section',
-    text: { type: 'mrkdwn', text: '*🚀 Delivery*' },
-  });
+  // Section 3: DELIVERY
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '*🚀 Delivery*' } });
 
   if (deliveryRows.length === 0) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_No active delivery projects_' }],
-    });
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '_No active delivery projects_' }] });
   } else {
-    // Show troubled projects with detail (top 10 worst)
     const troubled = deliveryRows.filter((r) => r.overdue > 0 || r.stale > 0);
-    const healthy = deliveryRows.filter((r) => r.overdue === 0 && r.stale === 0 && r.active > 0);
+    const healthy = deliveryRows.filter((r) => r.overdue === 0 && r.stale === 0);
 
-    const shownTroubled = troubled.slice(0, 10);
-    const hiddenTroubled = troubled.length - shownTroubled.length;
-
-    for (const proj of shownTroubled) {
-      const parts: string[] = [];
-      parts.push(`${proj.active} active`);
+    for (const proj of troubled.slice(0, 10)) {
+      const parts: string[] = [`${proj.active} active`];
       if (proj.overdue > 0) parts.push(`*${proj.overdue} overdue*`);
       if (proj.stale > 0) parts.push(`*${proj.stale} stale*`);
-      if (tempoData) parts.push(`${round(proj.hoursLastWeek)}h`);
-
-      blocks.push({
-        type: 'section',
-        text: { type: 'mrkdwn', text: `${proj.signal}  *${proj.name}* — ${parts.join('  •  ')}` },
-      });
+      if (tempoLastWeek) parts.push(`${round(proj.hours)}h`);
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `${proj.signal}  *${proj.name}* — ${parts.join('  •  ')}` } });
     }
-
-    if (hiddenTroubled > 0) {
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `_+${hiddenTroubled} more projects with issues — see Control Tower_` }],
-      });
+    if (troubled.length > 10) {
+      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `_+${troubled.length - 10} more with issues — see Control Tower_` }] });
     }
-
     if (healthy.length > 0) {
-      const healthyNames = healthy.slice(0, 8).map((p) => p.name).join(', ');
+      const names = healthy.slice(0, 8).map((p) => p.name).join(', ');
       const extra = healthy.length > 8 ? ` +${healthy.length - 8} more` : '';
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `🟢 On track: ${healthyNames}${extra}` }],
-      });
+      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `🟢 On track: ${names}${extra}` }] });
     }
   }
 
-  // ── FOOTER ──
+  // Footer
   blocks.push({ type: 'divider' });
-
+  const inProgress = allActive.filter((i) => categorize(i.fields.status.name) === 'inProgress').length;
+  const noDueDate = allActive.filter((i) => !i.fields.duedate).length;
   blocks.push({
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: `<https://controltower-three.vercel.app|Open Control Tower> for full details`,
+      text: `📊 *Quick Stats:* ${allActive.length} active  •  ${inProgress} in progress  •  ${overdue.length} overdue  •  ${stale.length} stale  •  ${recurringCount} recurring  •  ${noDueDate} missing due dates  •  <https://controltower-three.vercel.app|Open Control Tower>`,
     }],
   });
 
   return blocks;
 }
 
-// ─── Friday Digest Builder ───────────────────────────────────────────────────
+// ─── Friday Digest ────────────────────────────────────────────────────────────
 
 function buildFridayDigest(
-  issues: JiraIssue[],
-  tempoHours: { total: number; byPerson: Record<string, number>; byProject: Record<string, number> } | null,
+  opsIssues: JiraIssue[],
+  deliveryIssues: JiraIssue[],
+  tempoThisWeek: TempoWeekData | null,
 ): object[] {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -515,9 +548,13 @@ function buildFridayDigest(
   weekStart.setDate(weekStart.getDate() - (day === 0 ? 6 : day - 1));
   weekStart.setHours(0, 0, 0, 0);
 
-  const completedThisWeek = issues.filter((i) => {
+  const allIssues = [...opsIssues, ...deliveryIssues];
+
+  // Completed this week — deactivated users and epics excluded
+  const completedThisWeek = allIssues.filter((i) => {
     if (categorize(i.fields.status.name) !== 'done') return false;
     if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
+    if (i.fields.assignee?.active === false) return false;
     const changed = i.fields.statuscategorychangedate ?? i.fields.updated;
     if (!changed) return false;
     return new Date(changed) >= weekStart;
@@ -525,7 +562,6 @@ function buildFridayDigest(
 
   const completedByPerson: Record<string, string[]> = {};
   completedThisWeek.forEach((i) => {
-    if (i.fields.assignee?.active === false) return;
     const name = formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned');
     if (!completedByPerson[name]) completedByPerson[name] = [];
     if (completedByPerson[name].length < 3) {
@@ -539,11 +575,21 @@ function buildFridayDigest(
     completedByArea[area] = (completedByArea[area] ?? 0) + 1;
   });
 
-  const active = issues.filter((i) => { const s = categorize(i.fields.status.name); return s !== 'done' && s !== 'recurring'; });
+  // Active — epics, unassigned, and deactivated users excluded
+  const active = allIssues.filter((i) => {
+    const s = categorize(i.fields.status.name);
+    if (s === 'done' || s === 'recurring') return false;
+    if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
+    if (!i.fields.assignee) return false;
+    if (i.fields.assignee.active === false) return false;
+    return true;
+  });
+
   const overdue = active.filter((i) => {
     if (!i.fields.duedate) return false;
     const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
-    return due < today;
+    const daysLate = daysBetween(today, due);
+    return due < today && daysLate <= 90;
   });
 
   const stale = active.filter((i) => {
@@ -558,14 +604,8 @@ function buildFridayDigest(
   });
 
   const blocks: object[] = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: '📊 Friday Recap — What Happened This Week', emoji: true },
-    },
-    {
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `*${today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}*  •  Control Tower Weekly Recap` }],
-    },
+    { type: 'header', text: { type: 'plain_text', text: '📊 Friday Recap — What Happened This Week', emoji: true } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `*${today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}*  •  Control Tower Weekly Recap` }] },
     { type: 'divider' },
   ];
 
@@ -574,53 +614,39 @@ function buildFridayDigest(
       .sort(([, a], [, b]) => b - a)
       .map(([area, count]) => `${area}: ${count}`)
       .join('  •  ');
-
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `✅ *Completed This Week (${completedThisWeek.length})*\n${areaLine}` },
-    });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `✅ *Completed This Week (${completedThisWeek.length})*\n${areaLine}` } });
 
     const personLines = Object.entries(completedByPerson)
       .sort(([, a], [, b]) => b.length - a.length)
       .slice(0, 6)
       .map(([name, tasks]) => {
-        const total = completedThisWeek.filter((i) => formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned') === name).length;
+        const total = completedThisWeek.filter(
+          (i) => formatDisplayName(i.fields.assignee?.displayName ?? 'Unassigned') === name,
+        ).length;
         const extra = total > 3 ? ` _(+${total - 3} more)_` : '';
         return `*${name}* (${total})${extra}\n   ${tasks.join('\n   ')}`;
       });
-
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: personLines.join('\n\n') },
-    });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: personLines.join('\n\n') } });
   } else {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: '⚠️ *No tasks completed this week.* Something might be off.' },
-    });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '⚠️ *No tasks completed this week.* Something might be off.' } });
   }
 
   blocks.push({ type: 'divider' });
 
-  if (tempoHours && tempoHours.total > 0) {
-    const topPeople = Object.entries(tempoHours.byPerson)
+  if (tempoThisWeek && tempoThisWeek.total > 0) {
+    const topPeople = Object.entries(tempoThisWeek.byPerson)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 5)
-      .map(([name, hrs]) => `${formatDisplayName(name).split(' ')[0]}: ${round(hrs)}h`)
+      .map(([name, hrs]) => `${name.split(' ')[0]}: ${round(hrs)}h`)
       .join('  •  ');
-
-    const topProjects = Object.entries(tempoHours.byProject)
+    const topProjects = Object.entries(tempoThisWeek.byProject)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 5)
       .map(([proj, hrs]) => `${resolveArea(proj)}: ${round(hrs)}h`)
       .join('  •  ');
-
     blocks.push({
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `⏱️ *Hours Logged This Week: ${round(tempoHours.total)}h*\n\n*By person:* ${topPeople}\n*By project:* ${topProjects}`,
-      },
+      text: { type: 'mrkdwn', text: `⏱️ *Hours Logged This Week: ${round(tempoThisWeek.total)}h*\n\n*By person:* ${topPeople}\n*By project:* ${topProjects}` },
     });
     blocks.push({ type: 'divider' });
   }
@@ -629,15 +655,9 @@ function buildFridayDigest(
   if (overdue.length > 0) slippedLines.push(`🔴 *${overdue.length} overdue* — oldest: <${JIRA_BROWSE}/${overdue[0].key}|${overdue[0].key}>`);
   if (stale.length > 0) slippedLines.push(`🟡 *${stale.length} stale* — no updates in 3+ days`);
   if (slippedLines.length > 0) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `⚠️ *Carrying Into Next Week*\n${slippedLines.join('\n')}` },
-    });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `⚠️ *Carrying Into Next Week*\n${slippedLines.join('\n')}` } });
   } else {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: '🎉 *Clean exit — nothing overdue or stale heading into next week!*' },
-    });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '🎉 *Clean exit — nothing overdue or stale heading into next week!*' } });
   }
 
   blocks.push(
@@ -646,7 +666,7 @@ function buildFridayDigest(
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `📈 *Week Summary:* ${completedThisWeek.length} completed  •  ${tempoHours ? round(tempoHours.total) + 'h logged' : 'Tempo unavailable'}  •  ${overdue.length} overdue  •  ${stale.length} stale  •  ${active.length} active`,
+        text: `📈 *Week Summary:* ${completedThisWeek.length} completed  •  ${tempoThisWeek ? round(tempoThisWeek.total) + 'h logged' : 'Tempo unavailable'}  •  ${overdue.length} overdue  •  ${stale.length} stale  •  ${active.length} active`,
       }],
     },
   );
@@ -654,88 +674,27 @@ function buildFridayDigest(
   return blocks;
 }
 
-// ─── Tempo Weekly Hours ──────────────────────────────────────────────────────
-
-function getWeekRangeOffset(weeksBack: number): { from: string; to: string } {
-  const now = new Date();
-  const day = now.getDay();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1) - (weeksBack * 7));
-  monday.setHours(0, 0, 0, 0);
-  const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
-  return {
-    from: monday.toISOString().split('T')[0],
-    to: sunday.toISOString().split('T')[0],
-  };
-}
-
-async function fetchTempoWeekData(weeksBack: number): Promise<{ total: number; byPerson: Record<string, number>; byProject: Record<string, number> }> {
-  const { from, to } = getWeekRangeOffset(weeksBack);
-  const worklogs = await fetchTempoWorklogs(from, to);
-
-  let total = 0;
-  const byPerson: Record<string, number> = {};
-  const byProject: Record<string, number> = {};
-
-  for (const wl of worklogs) {
-    const hours = (wl.timeSpentSeconds ?? 0) / 3600;
-    total += hours;
-    const name = wl.author?.displayName ?? 'Unknown';
-    byPerson[name] = (byPerson[name] ?? 0) + hours;
-    const projKey = wl.issue?.key?.split('-')[0] ?? '(unlinked)';
-    byProject[projKey] = (byProject[projKey] ?? 0) + hours;
-  }
-
-  return { total, byPerson, byProject };
-}
-
-async function fetchWeeklyTempoHours(): Promise<{ total: number; byPerson: Record<string, number>; byProject: Record<string, number> } | null> {
-  try {
-    return await fetchTempoWeekData(0);
-  } catch (err) {
-    console.error('[Digest] Tempo fetch error:', err);
-    return null;
-  }
-}
-
-async function fetchWeekOverWeekTempo(): Promise<{ current: { total: number; byPerson: Record<string, number>; byProject: Record<string, number> }; previous: { total: number; byPerson: Record<string, number>; byProject: Record<string, number> } } | null> {
-  try {
-    const [current, previous] = await Promise.all([
-      fetchTempoWeekData(1),
-      fetchTempoWeekData(2),
-    ]);
-    return { current, previous };
-  } catch (err) {
-    console.error('[Digest] Tempo WoW fetch error:', err);
-    return null;
-  }
-}
-
-// ─── Send to Slack ───────────────────────────────────────────────────────────
+// ─── Send to Slack ────────────────────────────────────────────────────────────
 
 async function sendToSlack(blocks: object[]): Promise<boolean> {
   if (!SLACK_WEBHOOK_URL) {
     console.error('[Digest] SLACK_WEBHOOK_URL not configured');
     return false;
   }
-
   const res = await fetch(SLACK_WEBHOOK_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ blocks }),
   });
-
   if (!res.ok) {
     const text = await res.text();
     console.error(`[Digest] Slack webhook error: ${res.status} ${text}`);
     return false;
   }
-
   return true;
 }
 
-// ─── Route Handler ───────────────────────────────────────────────────────────
+// ─── Route Handler ────────────────────────────────────────────────────────────
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -751,31 +710,45 @@ export async function GET(request: Request) {
   try {
     console.log(`[Digest] Building ${type} digest...`);
 
-    const [issues, tempoWeek, tempoWoW, activeDeliveryKeys] = await Promise.all([
-      fetchAllJiraIssues(),
-      type === 'friday' ? fetchWeeklyTempoHours() : Promise.resolve(null),
-      type === 'monday' ? fetchWeekOverWeekTempo() : Promise.resolve(null),
-      type === 'monday' ? fetchActiveDeliveryKeys() : Promise.resolve(new Set<string>()),
+    // Fetch Jira data — ops and delivery in parallel
+    const [opsIssues, deliveryResult] = await Promise.all([
+      fetchOpsIssues(),
+      fetchDeliveryIssues(),
     ]);
 
-    console.log(`[Digest] Fetched ${issues.length} issues`);
+    const deliveryProjectNames: Record<string, string> = {};
+    deliveryResult.projects.forEach((p) => { deliveryProjectNames[p.key] = p.name; });
 
-    const blocks = type === 'monday'
-      ? buildMondayDigest(issues, tempoWoW, activeDeliveryKeys)
-      : buildFridayDigest(issues, tempoWeek);
+    console.log(`[Digest] Ops: ${opsIssues.length} issues | Delivery: ${deliveryResult.issues.length} issues from ${deliveryResult.projects.length} projects`);
 
-    if (dryRun) {
-      return NextResponse.json({ type, blocks, issueCount: issues.length });
+    if (type === 'monday') {
+      // Monday uses last week's Tempo hours for context
+      const tempoLastWeek = await fetchTempoWeekData(1).catch(() => null);
+      const blocks = buildMondayDigest(opsIssues, deliveryResult.issues, deliveryProjectNames, tempoLastWeek);
+
+      if (dryRun) {
+        return NextResponse.json({
+          type, blocks, blockCount: blocks.length,
+          opsIssueCount: opsIssues.length,
+          deliveryIssueCount: deliveryResult.issues.length,
+          deliveryProjectCount: deliveryResult.projects.length,
+        });
+      }
+      const sent = await sendToSlack(blocks);
+      return NextResponse.json({ success: sent, type, blockCount: blocks.length, message: sent ? 'Monday digest sent' : 'Failed to send' });
+
+    } else {
+      // Friday uses this week's Tempo hours for the recap
+      const tempoThisWeek = await fetchTempoWeekData(0).catch(() => null);
+      const blocks = buildFridayDigest(opsIssues, deliveryResult.issues, tempoThisWeek);
+
+      if (dryRun) {
+        return NextResponse.json({ type, blocks, blockCount: blocks.length, issueCount: opsIssues.length + deliveryResult.issues.length });
+      }
+      const sent = await sendToSlack(blocks);
+      return NextResponse.json({ success: sent, type, message: sent ? 'Friday digest sent' : 'Failed to send' });
     }
 
-    const sent = await sendToSlack(blocks);
-
-    return NextResponse.json({
-      success: sent,
-      type,
-      issueCount: issues.length,
-      message: sent ? `${type} digest sent to Slack` : 'Failed to send to Slack',
-    });
   } catch (error) {
     console.error('[Digest] Error:', error);
     return NextResponse.json({ error: 'Failed to generate digest' }, { status: 500 });
