@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { fetchJson, fetchTempoWorklogs, JIRA_BASE, JIRA_AUTH, OPS_PROJECTS, round } from '@/lib/api';
 import { formatDisplayName } from '@/lib/constants';
+import { supabase } from '@/lib/supabase';
 import type { JiraIssue, JiraApiResponse } from '@/types';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -57,6 +58,27 @@ function resolveArea(projectKey: string): string {
 }
 
 // ─── Data Fetching ───────────────────────────────────────────────────────────
+
+/** Fetch active delivery project keys from Supabase PSA board */
+async function fetchActiveDeliveryKeys(): Promise<Set<string>> {
+  try {
+    const { data, error } = await supabase
+      .from('projects')
+      .select('jira_key, status')
+      .eq('status', 'active');
+
+    if (error) throw error;
+    const keys = new Set<string>();
+    (data ?? []).forEach((p: { jira_key: string | null }) => {
+      if (p.jira_key) keys.add(p.jira_key);
+    });
+    console.log(`[Digest] Active delivery projects from Supabase: ${keys.size} (${[...keys].join(', ')})`);
+    return keys;
+  } catch (err) {
+    console.error('[Digest] Supabase fetch error:', err);
+    return new Set(); // fallback: empty set means no delivery filtering
+  }
+}
 
 async function fetchAllJiraIssues(): Promise<JiraIssue[]> {
   const allIssues: JiraIssue[] = [];
@@ -156,6 +178,7 @@ function worstOffender(h: HealthResult, today: Date): string {
 function buildMondayDigest(
   issues: JiraIssue[],
   tempoData: { current: { total: number; byPerson: Record<string, number>; byProject: Record<string, number> }; previous: { total: number; byPerson: Record<string, number>; byProject: Record<string, number> } } | null,
+  activeDeliveryKeys: Set<string>,
 ): object[] {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -172,24 +195,12 @@ function buildMondayDigest(
     return true;
   });
 
-  // ── Filter dead delivery projects (90+ days dormant) ──
-  const projectLastUpdate: Record<string, Date> = {};
-  allActive.forEach((i) => {
-    const key = i.fields.project.key;
-    const updated = i.fields.updated ? new Date(i.fields.updated) : new Date(0);
-    if (!projectLastUpdate[key] || updated > projectLastUpdate[key]) {
-      projectLastUpdate[key] = updated;
-    }
-  });
-  const deadProjects = new Set<string>();
-  Object.entries(projectLastUpdate).forEach(([key, lastUpdate]) => {
-    if (!opsKeys.has(key) && daysBetween(today, lastUpdate) > 90) deadProjects.add(key);
-  });
-  const active = allActive.filter((i) => !deadProjects.has(i.fields.project.key));
-
-  // ── Split: ops vs delivery ──
-  const opsIssues = active.filter((i) => opsKeys.has(i.fields.project.key));
-  const deliveryIssues = active.filter((i) => !opsKeys.has(i.fields.project.key));
+  // ── Split: ops vs delivery (delivery = only Supabase active projects) ──
+  const opsIssues = allActive.filter((i) => opsKeys.has(i.fields.project.key));
+  const deliveryIssues = activeDeliveryKeys.size > 0
+    ? allActive.filter((i) => !opsKeys.has(i.fields.project.key) && activeDeliveryKeys.has(i.fields.project.key))
+    : []; // If Supabase returns nothing, show no delivery (don't fallback to all)
+  const active = [...opsIssues, ...deliveryIssues];
 
   // ── Map project keys to area for Tempo hours lookup ──
   const areaProjectKeys: Record<string, string[]> = {
@@ -406,7 +417,12 @@ function buildMondayDigest(
       healthLines.push(`⚠️ *${totalOpsStale} stale in Ops* (${staleSummary.join(', ')})`);
     }
     if (totalDeliveryStale > 0) {
-      healthLines.push(`⚠️ *${totalDeliveryStale} stale in Delivery* (${deliveryStaleParts.join(', ')})`);
+      const topStale = deliveryStaleParts.slice(0, 5);
+      const remaining = deliveryStaleParts.length - 5;
+      let staleText = `⚠️ *${totalDeliveryStale} stale in Delivery* (${topStale.join(', ')}`;
+      if (remaining > 0) staleText += `, +${remaining} more`;
+      staleText += ')';
+      healthLines.push(staleText);
     }
   } else {
     healthLines.push('✅ No stale tasks — everything is moving');
@@ -434,11 +450,14 @@ function buildMondayDigest(
       elements: [{ type: 'mrkdwn', text: '_No active delivery projects_' }],
     });
   } else {
-    // Show troubled projects with detail
+    // Show troubled projects with detail (top 10 worst)
     const troubled = deliveryRows.filter((r) => r.overdue > 0 || r.stale > 0);
     const healthy = deliveryRows.filter((r) => r.overdue === 0 && r.stale === 0 && r.active > 0);
 
-    for (const proj of troubled) {
+    const shownTroubled = troubled.slice(0, 10);
+    const hiddenTroubled = troubled.length - shownTroubled.length;
+
+    for (const proj of shownTroubled) {
       const parts: string[] = [];
       parts.push(`${proj.active} active`);
       if (proj.overdue > 0) parts.push(`*${proj.overdue} overdue*`);
@@ -451,27 +470,25 @@ function buildMondayDigest(
       });
     }
 
-    if (healthy.length > 0) {
-      const healthyLine = healthy.map((p) => {
-        const hrs = tempoData ? `, ${round(p.hoursLastWeek)}h` : '';
-        return `${p.name} (${p.active}${hrs})`;
-      }).join('  •  ');
+    if (hiddenTroubled > 0) {
       blocks.push({
         type: 'context',
-        elements: [{ type: 'mrkdwn', text: `🟢 On track: ${healthyLine}` }],
+        elements: [{ type: 'mrkdwn', text: `_+${hiddenTroubled} more projects with issues — see Control Tower_` }],
+      });
+    }
+
+    if (healthy.length > 0) {
+      const healthyNames = healthy.slice(0, 8).map((p) => p.name).join(', ');
+      const extra = healthy.length > 8 ? ` +${healthy.length - 8} more` : '';
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `🟢 On track: ${healthyNames}${extra}` }],
       });
     }
   }
 
   // ── FOOTER ──
   blocks.push({ type: 'divider' });
-
-  if (deadProjects.size > 0) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `_${deadProjects.size} inactive project${deadProjects.size > 1 ? 's' : ''} excluded (90+ days dormant)_` }],
-    });
-  }
 
   blocks.push({
     type: 'context',
@@ -734,16 +751,17 @@ export async function GET(request: Request) {
   try {
     console.log(`[Digest] Building ${type} digest...`);
 
-    const [issues, tempoWeek, tempoWoW] = await Promise.all([
+    const [issues, tempoWeek, tempoWoW, activeDeliveryKeys] = await Promise.all([
       fetchAllJiraIssues(),
       type === 'friday' ? fetchWeeklyTempoHours() : Promise.resolve(null),
       type === 'monday' ? fetchWeekOverWeekTempo() : Promise.resolve(null),
+      type === 'monday' ? fetchActiveDeliveryKeys() : Promise.resolve(new Set<string>()),
     ]);
 
     console.log(`[Digest] Fetched ${issues.length} issues`);
 
     const blocks = type === 'monday'
-      ? buildMondayDigest(issues, tempoWoW)
+      ? buildMondayDigest(issues, tempoWoW, activeDeliveryKeys)
       : buildFridayDigest(issues, tempoWeek);
 
     if (dryRun) {
