@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Loader2, AlertTriangle, Target, Send, Search, X, ChevronRight } from 'lucide-react';
+import LoadingProgress from './LoadingProgress';
 
 // ── Types ──────────────────────────────────────────────────────
 interface StatusHistory {
@@ -460,10 +461,14 @@ export default function DeliveryTab() {
   // ── Loading / Empty ───────────────────────────────────────
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-        <Loader2 className="h-8 w-8 animate-spin mb-4" />
-        <p className="text-sm">Loading project health...</p>
-      </div>
+      <LoadingProgress
+        steps={[
+          'Discovering active projects...',
+          'Loading delivery tasks...',
+          'Calculating project health...',
+        ]}
+        intervalMs={2200}
+      />
     );
   }
 

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 import { MONTH_NAMES } from '@/lib/constants';
+import LoadingProgress from './LoadingProgress';
 import type { ActualsResponse, ActualsPerson, ActualsProjectTotal, ActualsView } from '@/types';
 
 const JIRA_BROWSE_URL = 'https://verybigthings.atlassian.net/browse';
@@ -83,11 +84,15 @@ export default function TimeActualsTab() {
   // Loading
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-slate-500">
-        <Loader2 className="h-8 w-8 animate-spin mb-4" />
-        <p className="text-sm">Loading {MONTH_NAMES[month - 1]} {year} worklogs...</p>
-        <p className="text-xs text-slate-400 mt-1">Resolving Tempo worklogs via Jira API</p>
-      </div>
+      <LoadingProgress
+        steps={[
+          `Fetching ${MONTH_NAMES[month - 1]} ${year} worklogs...`,
+          'Resolving Jira projects...',
+          'Mapping people to tasks...',
+          'Calculating hours breakdown...',
+        ]}
+        intervalMs={2000}
+      />
     );
   }
 
