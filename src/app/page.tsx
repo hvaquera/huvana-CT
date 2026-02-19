@@ -28,20 +28,25 @@ export default function Dashboard() {
   const fetchIssues = useCallback(async (showLoader = false) => {
     if (showLoader) setIsRefreshing(true);
     try {
-      const [jiraRes, deliveryRes, deliveryAllRes] = await Promise.all([
-        fetch('/api/jira'),
-        fetch('/api/jira/delivery'),
-        fetch('/api/jira/delivery-all'),
-      ]);
+      // Fire all requests in parallel
+      const jiraPromise = fetch('/api/jira');
+      const deliveryPromise = fetch('/api/jira/delivery');
+      const deliveryAllPromise = fetch('/api/jira/delivery-all');
+
+      // Show dashboard as soon as ops data arrives (fastest)
+      const jiraRes = await jiraPromise;
       if (jiraRes.ok) {
         const data = await jiraRes.json();
         setIssues(data.issues ?? []);
       }
+      setLoading(false); // Render immediately with ops data
+
+      // Delivery data loads in background
+      const [deliveryRes, deliveryAllRes] = await Promise.all([deliveryPromise, deliveryAllPromise]);
       if (deliveryAllRes.ok) {
         const data = await deliveryAllRes.json();
         setDeliveryIssues(data.issues ?? []);
       } else if (deliveryRes.ok) {
-        // Fallback to delivery without Done if delivery-all fails
         const data = await deliveryRes.json();
         setDeliveryIssues(data.issues ?? []);
       }
@@ -50,8 +55,8 @@ export default function Dashboard() {
       setStaleExpanded(false);
     } catch (err) {
       console.error('[Dashboard] Fetch error:', err);
-    } finally {
       setLoading(false);
+    } finally {
       setIsRefreshing(false);
     }
   }, []);

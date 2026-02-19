@@ -114,6 +114,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
   const [hoursPerPersonOpen, setHoursPerPersonOpen] = useState(true);
   const [personPerfOpen, setPersonPerfOpen] = useState(true);
   const [copiedNudge, setCopiedNudge] = useState<string | null>(null);
+  const [expandedStale, setExpandedStale] = useState<string | null>(null);
 
   const fetchTempo = useCallback(async () => {
     if (tempoFetched) return;
@@ -133,7 +134,8 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     finally { setTempoLoading(false); }
   }, [tempoFetched]);
 
-  useEffect(() => { if (activeSection !== 'delivery') fetchTempo(); }, [activeSection, fetchTempo]);
+  // Prefetch Tempo data immediately in background — don't wait for tab switch
+  useEffect(() => { fetchTempo(); }, [fetchTempo]);
 
   const allIssues = useMemo(() => {
     const keys = new Set(jiraIssues.map((i) => i.key));
@@ -191,8 +193,14 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
 
     const personCompleted: Record<string, number> = {};
     doneInPeriod.forEach((i) => { const n = formatDisplayName(i.fields.assignee?.displayName ?? ''); if (n && i.fields.assignee?.active !== false) personCompleted[n] = (personCompleted[n] ?? 0) + 1; });
-    const personStale: Record<string, number> = {};
-    stale.forEach((i) => { const n = formatDisplayName(i.fields.assignee?.displayName ?? ''); if (n && i.fields.assignee?.active !== false) personStale[n] = (personStale[n] ?? 0) + 1; });
+    const personStale: Record<string, Array<{ key: string; summary: string; project: string; daysSilent: number }>> = {};
+    stale.forEach((i) => {
+      const n = formatDisplayName(i.fields.assignee?.displayName ?? '') || 'Unassigned';
+      if (i.fields.assignee?.active === false) return;
+      if (!personStale[n]) personStale[n] = [];
+      const daysSilent = Math.floor((Date.now() - new Date(i.fields.updated!).getTime()) / 86400000);
+      personStale[n].push({ key: i.key, summary: i.fields.summary.slice(0, 60), project: i.fields.project.name || i.fields.project.key, daysSilent });
+    });
     const personOverdue: Record<string, number> = {};
     overdue.forEach((i) => { const n = formatDisplayName(i.fields.assignee?.displayName ?? ''); if (n && i.fields.assignee?.active !== false) personOverdue[n] = (personOverdue[n] ?? 0) + 1; });
 
@@ -302,7 +310,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
       seenPeople.add(p.name);
       const completed = jiraMetrics.personCompleted[p.name] ?? 0;
       const areas = [...new Set(p.projects.map((pr) => resolveAreaName(pr.projectKey)))];
-      personPerformance.push({ name: p.name, hours: p.totalHours, completed, overdue: jiraMetrics.personOverdue[p.name] ?? 0, stale: jiraMetrics.personStale[p.name] ?? 0, areas, hoursPerTask: completed > 0 ? Math.round((p.totalHours / completed) * 10) / 10 : null });
+      personPerformance.push({ name: p.name, hours: p.totalHours, completed, overdue: jiraMetrics.personOverdue[p.name] ?? 0, stale: (jiraMetrics.personStale[p.name] ?? []).length, areas, hoursPerTask: completed > 0 ? Math.round((p.totalHours / completed) * 10) / 10 : null });
     });
 
     // Second: people with Jira activity but no Tempo hours this month
@@ -311,7 +319,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
       if (seenPeople.has(name) || !name) return;
       seenPeople.add(name);
       const completed = jiraMetrics.personCompleted[name] ?? 0;
-      personPerformance.push({ name, hours: 0, completed, overdue: jiraMetrics.personOverdue[name] ?? 0, stale: jiraMetrics.personStale[name] ?? 0, areas: [], hoursPerTask: null });
+      personPerformance.push({ name, hours: 0, completed, overdue: jiraMetrics.personOverdue[name] ?? 0, stale: (jiraMetrics.personStale[name] ?? []).length, areas: [], hoursPerTask: null });
     });
 
     personPerformance.sort((a, b) => b.hours - a.hours);
@@ -448,7 +456,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
               <p className="text-xs text-slate-400 py-4 text-center">No tasks completed in this period.</p>
             ) : (
               <ResponsiveContainer width="100%" height={Math.max(180, Object.keys(jiraMetrics.personCompleted).length * 30)}>
-                <BarChart data={Object.entries(jiraMetrics.personCompleted).filter(([n]) => n !== 'Unassigned').map(([n, d]) => ({ name: n.split(' ')[0], done: d, overdue: jiraMetrics.personOverdue[n] ?? 0, stale: jiraMetrics.personStale[n] ?? 0 })).sort((a, b) => b.done - a.done)} layout="vertical" margin={{ left: 0, right: 10 }}>
+                <BarChart data={Object.entries(jiraMetrics.personCompleted).filter(([n]) => n !== 'Unassigned').map(([n, d]) => ({ name: n.split(' ')[0], done: d, overdue: jiraMetrics.personOverdue[n] ?? 0, stale: (jiraMetrics.personStale[n] ?? []).length })).sort((a, b) => b.done - a.done)} layout="vertical" margin={{ left: 0, right: 10 }}>
                   <XAxis type="number" tick={{ fontSize: 11 }} /><YAxis type="category" dataKey="name" width={80} tick={{ fontSize: 11 }} />
                   <Tooltip contentStyle={{ fontSize: 12 }} />
                   <Bar dataKey="done" fill={GREEN} name="Done" radius={[0, 4, 4, 0]} />
@@ -507,14 +515,36 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
           </ReportCard>
 
           {jiraMetrics.stale > 0 && (
-            <ReportCard title="Stale Task Frequency" subtitle="Who has tasks with no updates in 3+ days (excludes recurring)" icon={AlertCircle}>
-              <div className="space-y-2">
-                {Object.entries(jiraMetrics.personStale).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a).map(([name, c]) => (
-                  <div key={name} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0">
-                    <span className="text-sm text-slate-700">{name}</span>
-                    <span className="text-xs text-amber-600 font-bold bg-amber-50 px-2 py-0.5 rounded-md">{c} stale</span>
-                  </div>
-                ))}
+            <ReportCard title="Stale Task Frequency" subtitle="Who has tasks with no updates in 3+ days (excludes recurring) — click to expand" icon={AlertCircle}>
+              <div className="space-y-0">
+                {Object.entries(jiraMetrics.personStale).filter(([, tasks]) => tasks.length > 0).sort(([, a], [, b]) => b.length - a.length).map(([name, tasks]) => {
+                  const isExpanded = expandedStale === name;
+                  return (
+                    <div key={name}>
+                      <button onClick={() => setExpandedStale(isExpanded ? null : name)} className="flex items-center justify-between w-full py-2 px-1 border-b border-slate-50 last:border-0 hover:bg-slate-50/50 rounded transition-colors text-left">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400">{isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}</span>
+                          <span className="text-sm text-slate-700">{name}</span>
+                        </div>
+                        <span className="text-xs text-amber-600 font-bold bg-amber-50 px-2 py-0.5 rounded-md">{tasks.length} stale</span>
+                      </button>
+                      {isExpanded && (
+                        <div className="ml-5 mb-2 space-y-1">
+                          {tasks.sort((a, b) => b.daysSilent - a.daysSilent).map((t) => (
+                            <div key={t.key} className="flex items-center justify-between py-1 text-xs">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <a href={`${JIRA_BROWSE_URL}/${t.key}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-800 font-mono font-semibold shrink-0">{t.key}</a>
+                                <span className="text-slate-500 truncate">{t.summary}</span>
+                              </div>
+                              <span className="text-amber-500 font-medium shrink-0 ml-2">{t.daysSilent}d</span>
+                            </div>
+                          ))}
+                          <div className="text-[10px] text-slate-400 pt-0.5">Project: {tasks[0]?.project}</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </ReportCard>
           )}
