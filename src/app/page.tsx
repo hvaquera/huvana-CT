@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Loader2, RefreshCw, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import LoadingProgress from '@/components/dashboard/LoadingProgress';
 import OverdueBlock from '@/components/dashboard/OverdueBlock';
 import UpcomingWork from '@/components/dashboard/UpcomingWork';
 import TaskSearch from '@/components/dashboard/TaskSearch';
@@ -134,7 +135,16 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <Loader2 className="h-8 w-8 animate-spin text-slate-600" />
+        <LoadingProgress
+          steps={[
+            'Connecting to Jira...',
+            'Loading ops tasks...',
+            'Loading delivery projects...',
+            'Building dashboard...',
+          ]}
+          intervalMs={1800}
+          subtitle="First load may take a few seconds"
+        />
       </div>
     );
   }

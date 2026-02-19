@@ -14,29 +14,48 @@ interface ResolvedIssue {
 
 /**
  * Resolve Tempo issue IDs to Jira issue keys + project info + summary.
- * Tempo v4 returns `issue.id` but not `issue.key`, so we batch-resolve via Jira REST API.
- * Results are cached for 1 hour to minimize API calls.
+ *
+ * Uses bulk JQL search (`id in (...)`) instead of individual /issue/{id} calls.
+ * This reduces ~250 API calls to ~5, avoiding rate limits and timeouts
+ * that caused false "unlinked" entries on slower connections.
  */
 async function resolveIssueIds(issueIds: string[]): Promise<Map<string, ResolvedIssue>> {
   const cache = new Map<string, ResolvedIssue>();
-  const BATCH_SIZE = 10;
+  const BATCH_SIZE = 50; // JQL supports up to ~50 IDs per query
 
   for (let i = 0; i < issueIds.length; i += BATCH_SIZE) {
     const batch = issueIds.slice(i, i + BATCH_SIZE);
-    const results = await Promise.allSettled(
-      batch.map(async (issueId) => {
-        const data = await fetchJson<{ key: string; fields: { summary: string; project: { key: string; name: string } } }>(
-          `${JIRA_BASE}/rest/api/2/issue/${issueId}?fields=project,summary`,
-          { Authorization: `Basic ${JIRA_AUTH}` },
-        );
-        return { issueId, key: data.key, summary: data.fields.summary, projectKey: data.fields.project.key, projectName: data.fields.project.name };
-      }),
-    );
-
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        const { issueId, ...resolved } = result.value;
-        cache.set(issueId, resolved);
+    const jql = `id in (${batch.join(',')})`;
+    try {
+      const data = await fetchJson<{ issues: Array<{ id: string; key: string; fields: { summary: string; project: { key: string; name: string } } }> }>(
+        `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${BATCH_SIZE}&fields=project,summary`,
+        { Authorization: `Basic ${JIRA_AUTH}` },
+      );
+      for (const issue of data.issues) {
+        cache.set(String(issue.id), {
+          key: issue.key,
+          summary: issue.fields.summary,
+          projectKey: issue.fields.project.key,
+          projectName: issue.fields.project.name,
+        });
+      }
+    } catch (err) {
+      console.error(`[resolveIssueIds] Batch failed for ${batch.length} issues:`, err);
+      // Fallback: resolve individually for this batch
+      const results = await Promise.allSettled(
+        batch.map(async (issueId) => {
+          const d = await fetchJson<{ key: string; fields: { summary: string; project: { key: string; name: string } } }>(
+            `${JIRA_BASE}/rest/api/2/issue/${issueId}?fields=project,summary`,
+            { Authorization: `Basic ${JIRA_AUTH}` },
+          );
+          return { issueId, key: d.key, summary: d.fields.summary, projectKey: d.fields.project.key, projectName: d.fields.project.name };
+        }),
+      );
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          const { issueId, ...resolved } = result.value;
+          cache.set(issueId, resolved);
+        }
       }
     }
   }
@@ -53,11 +72,11 @@ interface JiraUser {
 
 /**
  * Resolve Tempo account IDs to display names via Jira user API.
- * Tempo v4 may return accountId without displayName for some users.
+ * Uses parallel batches of 25 for faster resolution.
  */
 async function resolveUserNames(accountIds: string[]): Promise<Map<string, string>> {
   const cache = new Map<string, string>();
-  const BATCH_SIZE = 10;
+  const BATCH_SIZE = 25;
 
   for (let i = 0; i < accountIds.length; i += BATCH_SIZE) {
     const batch = accountIds.slice(i, i + BATCH_SIZE);
@@ -110,6 +129,11 @@ export async function GET(request: Request) {
         }
       }
       const issueCache = await resolveIssueIds([...allIssueIds]);
+      const unresolved = [...allIssueIds].filter((id) => !issueCache.has(id));
+      if (unresolved.length > 0) {
+        console.warn(`[Tempo/Actuals] ${unresolved.length}/${allIssueIds.size} issues failed to resolve:`, unresolved.slice(0, 10));
+      }
+      console.log(`[Tempo/Actuals] Resolved ${issueCache.size}/${allIssueIds.size} issues from ${worklogs.length} worklogs`);
 
       // 3. Resolve user account IDs → display names
       const uniqueAccountIds = [...new Set(worklogs.map((w) => w.author?.accountId).filter(Boolean))] as string[];
@@ -126,21 +150,13 @@ export async function GET(request: Request) {
         const hours = (wl.timeSpentSeconds ?? 0) / 3600;
         totalHours += hours;
 
-        // Resolve project + issue key
+        // Resolve project + issue key from cache
+        // Note: Tempo v4 never returns issue.key, only issue.id
         let projectKey = '(unlinked)';
         let projectName = '(No Jira Issue)';
         let issueKey = '(no-issue)';
 
-        if (wl.issue?.key) {
-          issueKey = wl.issue.key;
-          projectKey = wl.issue.key.split('-')[0];
-          projectName = projectKey;
-          // Try to get proper summary from resolved cache
-          const resolvedById = wl.issue?.id ? issueCache.get(String(wl.issue.id)) : undefined;
-          if (resolvedById) {
-            projectName = resolvedById.projectName;
-          }
-        } else if (wl.issue?.id) {
+        if (wl.issue?.id) {
           const resolved = issueCache.get(String(wl.issue.id));
           if (resolved) {
             issueKey = resolved.key;

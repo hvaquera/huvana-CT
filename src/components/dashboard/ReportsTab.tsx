@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import type { PieLabelRenderProps } from 'recharts';
 import { categorizeStatus, AREA_MAP, JIRA_BROWSE_URL, formatDisplayName } from '@/lib/constants';
+import LoadingProgress from './LoadingProgress';
 import type { JiraIssue, ActualsResponse } from '@/types';
 
 type ReportSection = 'delivery' | 'time' | 'insights' | 'monitor';
@@ -523,7 +524,10 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
 
       {/* ═══ TIME INTELLIGENCE ═══ */}
       {activeSection === 'time' && (tempoLoading ? (
-        <div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /><span className="ml-2 text-sm text-slate-400">Loading Tempo data...</span></div>
+        <LoadingProgress
+          steps={['Fetching timesheets from Tempo...', 'Resolving Jira projects...', 'Computing time distribution...']}
+          intervalMs={2000}
+        />
       ) : tempoMetrics ? (
         <div className="space-y-4">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -583,7 +587,10 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
 
       {/* ═══ OPERATIONAL INSIGHTS ═══ */}
       {activeSection === 'insights' && (tempoLoading ? (
-        <div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /><span className="ml-2 text-sm text-slate-400">Loading...</span></div>
+        <LoadingProgress
+          steps={['Loading time data...', 'Cross-referencing Jira tasks...', 'Building performance metrics...']}
+          intervalMs={2000}
+        />
       ) : crossMetrics && jiraMetrics && tempoMetrics ? (
         <div className="space-y-4">
           {/* Recurring Work — top of Operational Insights */}
@@ -676,7 +683,10 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
 
       {/* ═══ MONITOR ═══ */}
       {activeSection === 'monitor' && (tempoLoading ? (
-        <div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /><span className="ml-2 text-sm text-slate-400">Loading...</span></div>
+        <LoadingProgress
+          steps={['Loading timesheet data...', 'Scanning for anomalies...', 'Checking health metrics...']}
+          intervalMs={2000}
+        />
       ) : monitorMetrics ? (
         <div className="space-y-4">
 
