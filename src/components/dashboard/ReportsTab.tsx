@@ -115,6 +115,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
   const [personPerfOpen, setPersonPerfOpen] = useState(true);
   const [copiedNudge, setCopiedNudge] = useState<string | null>(null);
   const [expandedStale, setExpandedStale] = useState<string | null>(null);
+  const [recurringMonth, setRecurringMonth] = useState<'current' | 'previous'>('current');
 
   const fetchTempo = useCallback(async () => {
     if (tempoFetched) return;
@@ -179,9 +180,14 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     // Recurring breakdown by area and person
     const recurringByArea: Record<string, number> = {};
     const recurringByPerson: Record<string, string[]> = {};
+    const recurringIssueKeys = new Set<string>();
+    const recurringKeysByArea: Record<string, Set<string>> = {};
     recurring.forEach((i) => {
       const area = resolveAreaName(i.fields.project.key);
       recurringByArea[area] = (recurringByArea[area] ?? 0) + 1;
+      recurringIssueKeys.add(i.key);
+      if (!recurringKeysByArea[area]) recurringKeysByArea[area] = new Set();
+      recurringKeysByArea[area].add(i.key);
       const name = formatDisplayName(i.fields.assignee?.displayName ?? '');
       if (name) {
         if (!recurringByPerson[name]) recurringByPerson[name] = [];
@@ -234,7 +240,23 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
       }
     });
 
-    return { total: issues.length, active: active.length, doneInPeriod: doneInPeriod.length, overdue: overdue.length, stale: stale.length, recurringCount: recurring.length, recurringByArea, recurringByPerson, personCompleted, personStale, personOverdue, areaTasks, epicMap };
+    // Backlog Hygiene: tasks in To-Do/Backlog with no updates for 30+ days
+    const now = new Date();
+    const backlogStale = issues.filter((i) => {
+      if (categorizeStatus(i.fields.status.name) !== 'todo') return false;
+      if (!i.fields.updated) return false;
+      if (!i.fields.assignee) return false;
+      if (i.fields.assignee?.active === false) return false;
+      const daysSince = Math.floor((now.getTime() - new Date(i.fields.updated).getTime()) / 86400000);
+      return daysSince >= 30;
+    });
+    const backlogByArea: Record<string, number> = {};
+    backlogStale.forEach((i) => {
+      const area = resolveAreaName(i.fields.project.key);
+      backlogByArea[area] = (backlogByArea[area] ?? 0) + 1;
+    });
+
+    return { total: issues.length, active: active.length, doneInPeriod: doneInPeriod.length, overdue: overdue.length, stale: stale.length, recurringCount: recurring.length, recurringByArea, recurringByPerson, recurringIssueKeys, recurringKeysByArea, personCompleted, personStale, personOverdue, areaTasks, epicMap, backlogStaleCount: backlogStale.length, backlogByArea };
   }, [allIssues, deliveryPeriod, filterByPeriod]);
 
   // ── Tempo Metrics ──────────────────────────────────────────
@@ -624,27 +646,87 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
         <div className="space-y-4">
           {/* Recurring Work — top of Operational Insights */}
           {jiraMetrics.recurringCount > 0 && (
-            <ReportCard title="Recurring Work" subtitle={`${jiraMetrics.recurringCount} ongoing tasks excluded from stale/overdue counts`} icon={Clock}>
+            <ReportCard title="Recurring Work" subtitle={`${jiraMetrics.recurringCount} ongoing tasks excluded from stale/overdue counts — high counts may signal automation opportunities`} icon={Clock}>
               <div className="space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  {Object.entries(jiraMetrics.recurringByArea).sort(([, a], [, b]) => b - a).map(([area, count]) => (
-                    <span key={area} className="text-xs bg-purple-50 text-purple-700 px-2.5 py-1 rounded-lg font-medium">
-                      {area}: {count}
-                    </span>
-                  ))}
-                </div>
-                <div className="space-y-2 mt-2">
-                  {Object.entries(jiraMetrics.recurringByPerson).sort(([, a], [, b]) => b.length - a.length).map(([name, tasks]) => (
-                    <div key={name}>
-                      <div className="text-xs font-semibold text-slate-700 mb-0.5">{name} ({tasks.length})</div>
-                      <div className="flex flex-wrap gap-1">
-                        {tasks.map((t, i) => (
-                          <span key={i} className="text-[10px] text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded">{t}</span>
-                        ))}
+                {/* Month toggle */}
+                {tempoData && (
+                  <div className="flex gap-1 mb-1">
+                    <button onClick={() => setRecurringMonth('current')} className={`text-xs px-3 py-1 rounded-md font-medium transition-colors ${recurringMonth === 'current' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                      This Month
+                    </button>
+                    <button onClick={() => setRecurringMonth('previous')} className={`text-xs px-3 py-1 rounded-md font-medium transition-colors ${recurringMonth === 'previous' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                      Last Month
+                    </button>
+                  </div>
+                )}
+                {(() => {
+                  // Compute hours per area from Tempo data matched to recurring issue keys
+                  const recurringHoursByArea: Record<string, number> = {};
+                  const selectedTempo = recurringMonth === 'current' ? tempoData : prevTempoData;
+                  if (selectedTempo && jiraMetrics.recurringKeysByArea) {
+                    selectedTempo.people.forEach((p) => {
+                      p.projects.forEach((pr) => {
+                        pr.tasks.forEach((t) => {
+                          if (jiraMetrics.recurringIssueKeys.has(t.issueKey)) {
+                            // Find which area this key belongs to
+                            for (const [area, keys] of Object.entries(jiraMetrics.recurringKeysByArea)) {
+                              if (keys.has(t.issueKey)) {
+                                recurringHoursByArea[area] = (recurringHoursByArea[area] ?? 0) + t.hours;
+                                break;
+                              }
+                            }
+                          }
+                        });
+                      });
+                    });
+                  }
+                  const totalRecurringHours = Object.values(recurringHoursByArea).reduce((s, h) => s + h, 0);
+
+                  return (
+                    <>
+                      <div className="space-y-2">
+                        {Object.entries(jiraMetrics.recurringByArea).sort(([, a], [, b]) => b - a).map(([area, count]) => {
+                          const color = count >= 25 ? 'bg-red-50 text-red-700 border-red-200' : count >= 15 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                          const dot = count >= 25 ? '🔴' : count >= 15 ? '🟡' : '🟢';
+                          const hours = Math.round((recurringHoursByArea[area] ?? 0) * 10) / 10;
+                          return (
+                            <div key={area} className={`flex items-center justify-between px-3 py-2 rounded-lg border ${color}`}>
+                              <span className="text-sm font-medium">{dot} {area}</span>
+                              <div className="flex items-center gap-3">
+                                <span className="text-xs text-slate-500">{hours}h</span>
+                                <span className="text-sm font-bold">{count} tasks</span>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
+                      {totalRecurringHours > 0 && (
+                        <div className="text-xs text-slate-500 pt-1 font-medium">
+                          Total: {Math.round(totalRecurringHours * 10) / 10}h on recurring work ({recurringMonth === 'current' ? 'this' : 'last'} month)
+                        </div>
+                      )}
+                      <p className="text-[10px] text-slate-400">🟢 &lt;15 tasks  🟡 15–24 tasks  🔴 25+ tasks — consider automating</p>
+                    </>
+                  );
+                })()}
+              </div>
+            </ReportCard>
+          )}
+
+          {/* Backlog Hygiene — tasks sitting in To-Do/Backlog 30+ days */}
+          {jiraMetrics.backlogStaleCount > 0 && (
+            <ReportCard title="Backlog Hygiene" subtitle={`${jiraMetrics.backlogStaleCount} tasks sitting in To-Do / Backlog for 30+ days — review, update, or delete`} icon={AlertCircle}>
+              <div className="space-y-2">
+                {Object.entries(jiraMetrics.backlogByArea).sort(([, a], [, b]) => b - a).map(([area, count]) => {
+                  const color = count >= 20 ? 'bg-red-50 text-red-700 border-red-200' : count >= 10 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-700 border-slate-200';
+                  return (
+                    <div key={area} className={`flex items-center justify-between px-3 py-2 rounded-lg border ${color}`}>
+                      <span className="text-sm font-medium">{area}</span>
+                      <span className="text-sm font-bold">{count} stale</span>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
+                <p className="text-[10px] text-slate-400 pt-1">Tasks untouched for 30+ days in To-Do or Backlog. Time to clean up or prioritize.</p>
               </div>
             </ReportCard>
           )}
