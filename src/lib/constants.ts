@@ -22,7 +22,7 @@ const STATUS_CONFIG: Record<string, StatusConfig> = {
   'to do': { label: 'To Do', color: 'text-slate-700', bgColor: 'bg-slate-100' },
   'in progress': { label: 'In Progress', color: 'text-blue-700', bgColor: 'bg-blue-100' },
   'recurring work': { label: 'Recurring', color: 'text-purple-700', bgColor: 'bg-purple-100' },
-  'blocked': { label: 'Blocked', color: 'text-red-700', bgColor: 'bg-red-100' },
+  'blocked': { label: 'Blocked / In Review', color: 'text-red-700', bgColor: 'bg-red-100' },
   'done': { label: 'Done', color: 'text-green-700', bgColor: 'bg-green-100' },
   'document sent': { label: 'Doc Sent', color: 'text-amber-700', bgColor: 'bg-amber-100' },
   'docusign sent': { label: 'Docusign', color: 'text-orange-700', bgColor: 'bg-orange-100' },
@@ -41,10 +41,9 @@ export function categorizeStatus(statusName: string): StatusCategory {
   const s = statusName.toLowerCase();
   if (s.includes('done') || s.includes('closed') || s.includes('resolved') || s.includes('completed')) return 'done';
   if (s.includes('recurring')) return 'recurring';
-  if (s.includes('blocked')) return 'blocked';
+  if (s.includes('blocked') || s.includes('in review')) return 'blocked';
   if (
     s.includes('progress') ||
-    s.includes('in review') ||
     s.includes('active') ||
     s.includes('working') ||
     s.includes('development') ||

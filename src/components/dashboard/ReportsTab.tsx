@@ -419,7 +419,7 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
       project: i.fields.project.name,
     })).sort((a, b) => b.daysSilent - a.daysSilent);
 
-    // 5. Weekend Warriors: hours on Sat/Sun (safe local parsing)
+    // 5. Off-Hours Work: hours on Sat/Sun (safe local parsing)
     const weekendEntries: Array<{ name: string; date: string; hours: number }> = [];
     tempoData.people.forEach((p) => {
       p.projects.forEach((pr) => pr.tasks.forEach((t) => t.entries.forEach((e) => {
@@ -850,56 +850,41 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
             )}
           </ReportCard>
 
-          {/* 2. Unlinked Time */}
-          <ReportCard title="Time Without Jira Ticket" subtitle="Hours logged this month with no linked issue — click to expand" icon={AlertCircle}>
-            {monitorMetrics.unlinkedByPerson.length === 0 ? (
-              <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">All time entries are linked to Jira tickets!</span></div>
-            ) : (
-              <div className="space-y-2">
-                {monitorMetrics.unlinkedByPerson.map((p) => {
-                  const isExp = expandedDeliveryArea === 'unlinked-' + p.name;
-                  return (
-                    <div key={p.name}>
-                      <div className="flex items-center justify-between py-2 border-b border-slate-50 cursor-pointer hover:bg-slate-50 rounded" onClick={() => setExpandedDeliveryArea(isExp ? null : 'unlinked-' + p.name)}>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-slate-700">{p.name}</span>
-                          {isExp ? <ChevronUp className="w-3 h-3 text-slate-400" /> : <ChevronDown className="w-3 h-3 text-slate-400" />}
-                        </div>
-                        <span className="text-xs text-amber-600 font-bold bg-amber-50 px-2 py-0.5 rounded-md">{p.hours}h unlinked</span>
-                      </div>
-                      {isExp && (
-                        <div className="ml-4 mt-1 mb-2 space-y-1 border-l-2 border-slate-100 pl-3">
-                          {p.entries.map((e, idx) => (
-                            <div key={idx} className="flex items-center justify-between text-[11px]">
-                              <span className="text-slate-500">{new Date(e.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — {e.comment || '(no description)'}</span>
-                              <span className="text-slate-600 font-medium">{e.hours}h</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </ReportCard>
-
-          {/* 3. Overtime Watch */}
+          {/* 3. Overtime Watch — grouped by person */}
           <ReportCard title="Overtime Watch" subtitle="Days with 9+ hours logged — possible burnout risk or data entry error" icon={AlertOctagon}>
             {monitorMetrics.overtimeDays.length === 0 ? (
               <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">No overtime days this month.</span></div>
             ) : (
-              <div className="space-y-1.5">
-                {monitorMetrics.overtimeDays.slice(0, 15).map((d, i) => (
-                  <div key={i} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-slate-700">{d.name}</span>
-                      <span className="text-[10px] text-slate-400">{new Date(d.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
-                    </div>
-                    <span className={`text-xs font-bold px-2 py-0.5 rounded-md ${d.hours >= 12 ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600'}`}>{d.hours}h</span>
-                  </div>
-                ))}
-                {monitorMetrics.overtimeDays.length > 15 && <p className="text-[10px] text-slate-400 pt-1">+{monitorMetrics.overtimeDays.length - 15} more</p>}
+              <div className="space-y-2.5">
+                {(() => {
+                  const grouped: Record<string, { totalHours: number; days: Array<{ date: string; hours: number }> }> = {};
+                  monitorMetrics.overtimeDays.forEach((d) => {
+                    if (!grouped[d.name]) grouped[d.name] = { totalHours: 0, days: [] };
+                    grouped[d.name].totalHours += d.hours;
+                    grouped[d.name].days.push({ date: d.date, hours: d.hours });
+                  });
+                  return Object.entries(grouped)
+                    .sort(([, a], [, b]) => b.days.length - a.days.length)
+                    .slice(0, 10)
+                    .map(([name, data]) => (
+                      <div key={name} className="py-1.5 border-b border-slate-50 last:border-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-slate-700 font-medium">{name}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400">{data.days.length} day{data.days.length !== 1 ? 's' : ''}</span>
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded-md ${data.days.length >= 4 ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600'}`}>{Math.round(data.totalHours * 10) / 10}h total</span>
+                          </div>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {data.days.sort((a, b) => a.date.localeCompare(b.date)).map((day) => (
+                            <span key={day.date} className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">
+                              {new Date(day.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ({day.hours}h)
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ));
+                })()}
               </div>
             )}
           </ReportCard>
@@ -927,10 +912,10 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
             )}
           </ReportCard>
 
-          {/* 5. Weekend Warriors */}
-          <ReportCard title="Weekend Warriors" subtitle="Team members who logged hours on Saturday or Sunday this month" icon={Clock}>
+          {/* 5. Off-Hours Work */}
+          <ReportCard title="Off-Hours Work" subtitle="Hours logged on Saturday or Sunday — should be rare and only in exceptional circumstances" icon={Clock}>
             {monitorMetrics.weekendWarriors.length === 0 ? (
-              <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">No weekend work logged this month.</span></div>
+              <div className="flex items-center gap-2 py-3"><CheckCircle2 className="w-4 h-4 text-emerald-500" /><span className="text-sm text-emerald-600 font-medium">No weekend work logged this month. As it should be.</span></div>
             ) : (
               <div className="space-y-1.5">
                 {monitorMetrics.weekendWarriors.map((w) => (
