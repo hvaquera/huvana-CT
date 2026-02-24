@@ -10,7 +10,8 @@ import TaskSearch from '@/components/dashboard/TaskSearch';
 import TaskCard from '@/components/dashboard/TaskCard';
 import OpsDetails from '@/components/dashboard/OpsDetails';
 import TimeActualsTab from '@/components/dashboard/TimeActualsTab';
-import DeliveryTab from '@/components/dashboard/DeliveryTab';
+// Delivery tab hidden — moved to PSA
+// import DeliveryTab from '@/components/dashboard/DeliveryTab';
 import ReportsTab from '@/components/dashboard/ReportsTab';
 import { REFRESH_INTERVAL_MS, categorizeStatus, STATUS_SORT_ORDER, AREA_MAP } from '@/lib/constants';
 import type { JiraIssue, FilterValue, EpicProgress } from '@/types';
@@ -193,12 +194,14 @@ export default function Dashboard() {
               >
                 Time Actuals
               </TabsTrigger>
+              {/* Delivery tab hidden — moved to PSA
               <TabsTrigger
                 value="delivery"
                 className="bg-emerald-600 text-white data-[state=active]:bg-emerald-700 data-[state=active]:text-white"
               >
                 Delivery
               </TabsTrigger>
+              */}
               <TabsTrigger
                 value="reports"
                 className="bg-amber-600 text-white data-[state=active]:bg-amber-700 data-[state=active]:text-white"
@@ -210,7 +213,8 @@ export default function Dashboard() {
         </div>
 
         {isActuals && <TimeActualsTab />}
-        {isDelivery && <DeliveryTab />}
+        {/* Delivery tab hidden — moved to PSA */}
+        {/* {isDelivery && <DeliveryTab />} */}
         {filter === 'reports' && <ReportsTab jiraIssues={issues} deliveryIssues={deliveryIssues} />}
 
         {!isActuals && !isDelivery && filter !== 'reports' && (
