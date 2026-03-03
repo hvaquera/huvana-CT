@@ -13,6 +13,7 @@ export interface JiraIssue {
     summary: string;
     status: { name: string };
     assignee: { displayName: string; active?: boolean; accountId?: string } | null;
+    created?: string;
     duedate: string | null;
     priority: { name: string };
     project: { key: string; name: string };

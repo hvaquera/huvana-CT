@@ -12,6 +12,7 @@ import OpsDetails from '@/components/dashboard/OpsDetails';
 import TimeActualsTab from '@/components/dashboard/TimeActualsTab';
 // Delivery tab hidden — moved to PSA
 // import DeliveryTab from '@/components/dashboard/DeliveryTab';
+import KPIsTab from '@/components/dashboard/KPIsTab';
 import ReportsTab from '@/components/dashboard/ReportsTab';
 import { REFRESH_INTERVAL_MS, categorizeStatus, STATUS_SORT_ORDER, AREA_MAP } from '@/lib/constants';
 import type { JiraIssue, FilterValue, EpicProgress } from '@/types';
@@ -70,11 +71,12 @@ export default function Dashboard() {
 
   const isActuals = filter === 'actuals';
   const isDelivery = filter === 'delivery';
+  const isKPIs = filter === 'kpis';
 
   const areaIssues = useMemo(() => {
-    if (filter === 'all' || isActuals || isDelivery) return issues;
+    if (filter === 'all' || isActuals || isDelivery || isKPIs) return issues;
     return issues.filter((i) => i.fields.project.key === filter);
-  }, [issues, filter, isActuals]);
+  }, [issues, filter, isActuals, isKPIs]);
 
   const overdueTasks = useMemo(() => {
     return areaIssues.filter((i) => {
@@ -194,6 +196,12 @@ export default function Dashboard() {
               >
                 Time Actuals
               </TabsTrigger>
+              <TabsTrigger
+                value="kpis"
+                className="bg-violet-600 text-white data-[state=active]:bg-violet-700 data-[state=active]:text-white"
+              >
+                KPIs
+              </TabsTrigger>
               {/* Delivery tab hidden — moved to PSA
               <TabsTrigger
                 value="delivery"
@@ -213,11 +221,12 @@ export default function Dashboard() {
         </div>
 
         {isActuals && <TimeActualsTab />}
+        {filter === 'kpis' && <KPIsTab jiraIssues={issues} />}
         {/* Delivery tab hidden — moved to PSA */}
         {/* {isDelivery && <DeliveryTab />} */}
         {filter === 'reports' && <ReportsTab jiraIssues={issues} deliveryIssues={deliveryIssues} />}
 
-        {!isActuals && !isDelivery && filter !== 'reports' && (
+        {!isActuals && !isDelivery && !isKPIs && filter !== 'reports' && (
           <div className="space-y-4">
             {/* 1. Overdue */}
             <OverdueBlock tasks={overdueTasks} showArea={showArea} />

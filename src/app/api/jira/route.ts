@@ -23,13 +23,13 @@ export async function GET() {
         fetchJson<JiraSearchResponse>(
           `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(
             `project in (${projectList}) AND statusCategory != Done AND issuetype != Epic ORDER BY updated DESC`
-          )}&maxResults=200&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate`,
+          )}&maxResults=200&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate,created`,
           { Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json' },
         ),
         fetchJson<JiraSearchResponse>(
           `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(
             `project in (${projectList}) AND statusCategory = Done AND issuetype != Epic AND updated >= -90d ORDER BY updated DESC`
-          )}&maxResults=200&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate`,
+          )}&maxResults=200&fields=summary,status,assignee,duedate,priority,project,parent,issuetype,description,updated,statuscategorychangedate,created`,
           { Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json' },
         ),
       ]);
