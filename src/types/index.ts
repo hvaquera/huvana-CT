@@ -124,7 +124,7 @@ export interface ActualsResponse {
 // ─── Dashboard UI ────────────────────────────────────────────────────────────
 
 export type AreaKey = 'VBTLEGAL' | 'VBTFINANCE' | 'VBTGTM' | 'VBTOP';
-export type FilterValue = 'all' | AreaKey | 'actuals' | 'delivery' | 'reports';
+export type FilterValue = 'all' | AreaKey | 'actuals' | 'delivery' | 'kpis' | 'reports';
 export type StatusCategory = 'todo' | 'inProgress' | 'recurring' | 'blocked' | 'done' | 'other';
 export type ActualsView = 'person' | 'project';
 
