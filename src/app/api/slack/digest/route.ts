@@ -21,12 +21,6 @@ interface JiraSearchResponse {
   total: number;
 }
 
-interface JiraProject {
-  key: string;
-  name: string;
-  archived?: boolean;
-}
-
 interface TempoWeekData {
   total: number;
   byPerson: Record<string, number>;
@@ -79,49 +73,6 @@ async function fetchOpsIssues(): Promise<JiraIssue[]> {
   } catch (err) {
     console.error('[Digest] Failed to fetch ops issues:', err);
     return [];
-  }
-}
-
-/**
- * Fetch delivery issues — same pattern as /api/jira/delivery/route.ts.
- * Discovers projects from Jira directly (no Supabase dependency).
- * Uses Promise.allSettled so one bad project doesn't kill others.
- * Returns issues + the project list for building the name map.
- */
-async function fetchDeliveryIssues(): Promise<{ issues: JiraIssue[]; projects: JiraProject[] }> {
-  try {
-    const allProjects = await fetchJson<JiraProject[]>(
-      `${JIRA_BASE}/rest/api/3/project`,
-      { Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json' },
-    );
-
-    const opsSet = new Set<string>(OPS_PROJECTS);
-    const clientProjects = allProjects.filter((p) => !opsSet.has(p.key) && !p.archived);
-
-    const results = await Promise.allSettled(
-      clientProjects.map(async (proj) => {
-        const jql = `project = "${proj.key}" AND statusCategory != Done ORDER BY duedate ASC, updated DESC`;
-        const url = `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=${FIELDS}`;
-        const data = await fetchJson<JiraSearchResponse>(url, {
-          Authorization: `Basic ${JIRA_AUTH}`, Accept: 'application/json',
-        });
-        return { project: proj, issues: data.issues };
-      }),
-    );
-
-    const issues: JiraIssue[] = [];
-    const activeProjects: JiraProject[] = [];
-    for (const r of results) {
-      if (r.status === 'fulfilled' && r.value.issues.length > 0) {
-        issues.push(...r.value.issues);
-        activeProjects.push(r.value.project);
-      }
-    }
-
-    return { issues, projects: activeProjects };
-  } catch (err) {
-    console.error('[Digest] Failed to fetch delivery issues:', err);
-    return { issues: [], projects: [] };
   }
 }
 
@@ -257,8 +208,6 @@ async function fetchTempoWeekData(weeksBack: number): Promise<TempoWeekData | nu
 
 function buildMondayDigest(
   opsIssues: JiraIssue[],
-  deliveryIssues: JiraIssue[],
-  deliveryProjectNames: Record<string, string>,
   tempoLastWeek: TempoWeekData | null,
 ): object[] {
   const today = new Date();
@@ -281,10 +230,9 @@ function buildMondayDigest(
     });
 
   const activeOps = filterActive(opsIssues);
-  const activeDelivery = filterActive(deliveryIssues);
-  const allActive = [...activeOps, ...activeDelivery];
+  const allActive = activeOps;
 
-  const recurringCount = [...opsIssues, ...deliveryIssues].filter(
+  const recurringCount = opsIssues.filter(
     (i) => categorize(i.fields.status.name) === 'recurring',
   ).length;
 
@@ -340,40 +288,6 @@ function buildMondayDigest(
     Legal: ['VBTLEGAL'], Finance: ['VBTFINANCE'], 'GTM & Sales': ['VBTGTM'], Operations: ['VBTOP'],
   };
   const opsAreas = ['Legal', 'Finance', 'GTM & Sales', 'Operations'] as const;
-
-  // ── Delivery per-project ──
-  const deliveryMap = new Map<string, { name: string; issues: JiraIssue[] }>();
-  activeDelivery.forEach((i) => {
-    const key = i.fields.project.key;
-    if (!deliveryMap.has(key)) {
-      deliveryMap.set(key, { name: deliveryProjectNames[key] ?? i.fields.project.name, issues: [] });
-    }
-    deliveryMap.get(key)!.issues.push(i);
-  });
-
-  type DeliveryRow = { name: string; key: string; active: number; overdue: number; stale: number; hours: number; signal: string };
-  const deliveryRows: DeliveryRow[] = [];
-  deliveryMap.forEach(({ name, issues }, key) => {
-    const overdueCount = issues.filter((i) => {
-      if (!i.fields.duedate) return false;
-      const due = new Date(i.fields.duedate); due.setHours(0, 0, 0, 0);
-      const daysLate = daysBetween(today, due);
-      return due < today && daysLate <= 90;
-    }).length;
-    const staleCount = issues.filter((i) => {
-      if (categorize(i.fields.status.name) !== 'inProgress' || !i.fields.updated) return false;
-      const isEpic = i.fields.issuetype?.name?.toLowerCase() === 'epic';
-      const days = daysBetween(today, new Date(i.fields.updated));
-      if (days > 90) return false;
-      return isEpic ? days >= 14 : days >= 3;
-    }).length;
-    const hours = tempoLastWeek ? (tempoLastWeek.byProject[key] ?? 0) : 0;
-    let signal = '🟢';
-    if (overdueCount >= 3 || staleCount >= 3) signal = '🔴';
-    else if (overdueCount > 0 || staleCount > 0) signal = '🟡';
-    deliveryRows.push({ name, key, active: issues.length, overdue: overdueCount, stale: staleCount, hours, signal });
-  });
-  deliveryRows.sort((a, b) => (b.overdue + b.stale) - (a.overdue + a.stale) || b.active - a.active);
 
   // ── Timesheet adoption — ops team only ──
   let timesheetLine = '';
@@ -492,32 +406,6 @@ function buildMondayDigest(
   blocks.push({ type: 'section', text: { type: 'mrkdwn', text: healthLines.join('\n\n') } });
   blocks.push({ type: 'divider' });
 
-  // Section 3: DELIVERY
-  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '*🚀 Delivery*' } });
-
-  if (deliveryRows.length === 0) {
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '_No active delivery projects_' }] });
-  } else {
-    const troubled = deliveryRows.filter((r) => r.overdue > 0 || r.stale > 0);
-    const healthy = deliveryRows.filter((r) => r.overdue === 0 && r.stale === 0);
-
-    for (const proj of troubled.slice(0, 10)) {
-      const parts: string[] = [`${proj.active} active`];
-      if (proj.overdue > 0) parts.push(`*${proj.overdue} overdue*`);
-      if (proj.stale > 0) parts.push(`*${proj.stale} stale*`);
-      if (tempoLastWeek) parts.push(`${round(proj.hours)}h`);
-      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `${proj.signal}  *${proj.name}* — ${parts.join('  •  ')}` } });
-    }
-    if (troubled.length > 10) {
-      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `_+${troubled.length - 10} more with issues — see Control Tower_` }] });
-    }
-    if (healthy.length > 0) {
-      const names = healthy.slice(0, 8).map((p) => p.name).join(', ');
-      const extra = healthy.length > 8 ? ` +${healthy.length - 8} more` : '';
-      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `🟢 On track: ${names}${extra}` }] });
-    }
-  }
-
   // Footer
   blocks.push({ type: 'divider' });
   const inProgress = allActive.filter((i) => categorize(i.fields.status.name) === 'inProgress').length;
@@ -526,7 +414,7 @@ function buildMondayDigest(
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: `📊 *Quick Stats:* ${allActive.length} active  •  ${inProgress} in progress  •  ${overdue.length} overdue  •  ${stale.length} stale  •  ${recurringCount} recurring  •  ${noDueDate} missing due dates  •  <https://controltower-three.vercel.app|Open Control Tower>`,
+      text: `📊 *Quick Stats:* ${allActive.length} active  •  ${inProgress} in progress  •  ${overdue.length} overdue  •  ${stale.length} stale  •  ${recurringCount} recurring  •  ${noDueDate} missing due dates  •  <https://controltower-wine.vercel.app|Open Control Tower>`,
     }],
   });
 
@@ -537,7 +425,6 @@ function buildMondayDigest(
 
 function buildFridayDigest(
   opsIssues: JiraIssue[],
-  deliveryIssues: JiraIssue[],
   tempoThisWeek: TempoWeekData | null,
 ): object[] {
   const today = new Date();
@@ -548,7 +435,7 @@ function buildFridayDigest(
   weekStart.setDate(weekStart.getDate() - (day === 0 ? 6 : day - 1));
   weekStart.setHours(0, 0, 0, 0);
 
-  const allIssues = [...opsIssues, ...deliveryIssues];
+  const allIssues = opsIssues;
 
   // Completed this week — deactivated users and epics excluded
   const completedThisWeek = allIssues.filter((i) => {
@@ -708,30 +595,22 @@ export async function GET(request: Request) {
   }
 
   try {
-    console.log(`[Digest] Building ${type} digest...`);
+    console.log(`[Digest] Building ${type} digest (ops-only)...`);
 
-    // Fetch Jira data — ops and delivery in parallel
-    const [opsIssues, deliveryResult] = await Promise.all([
-      fetchOpsIssues(),
-      fetchDeliveryIssues(),
-    ]);
+    // Fetch Jira data — ops only (delivery moved to PSA)
+    const opsIssues = await fetchOpsIssues();
 
-    const deliveryProjectNames: Record<string, string> = {};
-    deliveryResult.projects.forEach((p) => { deliveryProjectNames[p.key] = p.name; });
-
-    console.log(`[Digest] Ops: ${opsIssues.length} issues | Delivery: ${deliveryResult.issues.length} issues from ${deliveryResult.projects.length} projects`);
+    console.log(`[Digest] Ops: ${opsIssues.length} issues`);
 
     if (type === 'monday') {
       // Monday uses last week's Tempo hours for context
       const tempoLastWeek = await fetchTempoWeekData(1).catch(() => null);
-      const blocks = buildMondayDigest(opsIssues, deliveryResult.issues, deliveryProjectNames, tempoLastWeek);
+      const blocks = buildMondayDigest(opsIssues, tempoLastWeek);
 
       if (dryRun) {
         return NextResponse.json({
           type, blocks, blockCount: blocks.length,
           opsIssueCount: opsIssues.length,
-          deliveryIssueCount: deliveryResult.issues.length,
-          deliveryProjectCount: deliveryResult.projects.length,
         });
       }
       const sent = await sendToSlack(blocks);
@@ -740,10 +619,10 @@ export async function GET(request: Request) {
     } else {
       // Friday uses this week's Tempo hours for the recap
       const tempoThisWeek = await fetchTempoWeekData(0).catch(() => null);
-      const blocks = buildFridayDigest(opsIssues, deliveryResult.issues, tempoThisWeek);
+      const blocks = buildFridayDigest(opsIssues, tempoThisWeek);
 
       if (dryRun) {
-        return NextResponse.json({ type, blocks, blockCount: blocks.length, issueCount: opsIssues.length + deliveryResult.issues.length });
+        return NextResponse.json({ type, blocks, blockCount: blocks.length, issueCount: opsIssues.length });
       }
       const sent = await sendToSlack(blocks);
       return NextResponse.json({ success: sent, type, message: sent ? 'Friday digest sent' : 'Failed to send' });
