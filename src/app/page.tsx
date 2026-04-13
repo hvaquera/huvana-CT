@@ -181,10 +181,10 @@ export default function Dashboard() {
             </button>
             <button
               onClick={() => signOut()}
-              className="p-2 rounded-lg hover:bg-slate-200 transition-colors"
-              title="Sign out"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 transition-colors cursor-pointer"
             >
-              <LogOut className="h-4 w-4 text-slate-400" />
+              <LogOut className="h-3.5 w-3.5" />
+              Sign out
             </button>
           </div>
         </div>
