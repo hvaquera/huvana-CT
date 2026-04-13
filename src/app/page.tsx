@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Loader2, RefreshCw, ChevronDown, ChevronUp, X } from 'lucide-react';
+import { Loader2, RefreshCw, ChevronDown, ChevronUp, X, LogOut } from 'lucide-react';
+import { signOut } from 'next-auth/react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import LoadingProgress from '@/components/dashboard/LoadingProgress';
 import OverdueBlock from '@/components/dashboard/OverdueBlock';
@@ -177,6 +178,13 @@ export default function Dashboard() {
               title="Refresh"
             >
               <RefreshCw className={`h-4 w-4 text-slate-500 ${isRefreshing ? 'animate-spin' : ''}`} />
+            </button>
+            <button
+              onClick={() => signOut()}
+              className="p-2 rounded-lg hover:bg-slate-200 transition-colors"
+              title="Sign out"
+            >
+              <LogOut className="h-4 w-4 text-slate-400" />
             </button>
           </div>
         </div>
