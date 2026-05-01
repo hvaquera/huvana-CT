@@ -1,45 +1,45 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { getToken } from 'next-auth/jwt';
 
-/**
- * Middleware — Google OAuth gate.
- *
- * Protects every route except:
- *   • /api/auth/*       — NextAuth's own endpoints
- *   • /api/slack/digest — cron-triggered, uses its own DIGEST_SECRET_KEY
- *   • /auth/signin      — the sign-in page itself
- *   • /_next, /favicon   — static assets
- */
-export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+// ─── AUTH MIDDLEWARE ──────────────────────────────────────────────────────────
+//
+// Currently DISABLED for local development.
+//
+// To re-enable for production:
+// 1. Uncomment the block below
+// 2. Make sure these are set in .env.local:
+//      GOOGLE_CLIENT_ID=...
+//      GOOGLE_CLIENT_SECRET=...
+//      NEXTAUTH_SECRET=...
+//      NEXTAUTH_URL=https://yourdomain.com
+// 3. Update ALLOWED_DOMAIN in src/lib/auth.ts
+//
+// import { getToken } from 'next-auth/jwt';
+//
+// export async function middleware(request: NextRequest) {
+//   const { pathname } = request.nextUrl;
+//   if (
+//     pathname.startsWith('/api/auth') ||
+//     pathname.startsWith('/api/slack/digest') ||
+//     pathname.startsWith('/auth/signin') ||
+//     pathname.startsWith('/_next') ||
+//     pathname === '/favicon.ico'
+//   ) {
+//     return NextResponse.next();
+//   }
+//   const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET });
+//   if (!token) {
+//     if (pathname.startsWith('/api/')) {
+//       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+//     }
+//     const signInUrl = new URL('/auth/signin', request.url);
+//     signInUrl.searchParams.set('callbackUrl', request.url);
+//     return NextResponse.redirect(signInUrl);
+//   }
+//   return NextResponse.next();
+// }
 
-  // Public paths — skip auth check
-  if (
-    pathname.startsWith('/api/auth') ||
-    pathname.startsWith('/api/slack/digest') ||
-    pathname.startsWith('/auth/signin') ||
-    pathname.startsWith('/_next') ||
-    pathname === '/favicon.ico'
-  ) {
-    return NextResponse.next();
-  }
-
-  const token = await getToken({
-    req: request,
-    secret: process.env.NEXTAUTH_SECRET,
-  });
-
-  if (!token) {
-    // API routes → 401 JSON; pages → redirect to sign-in
-    if (pathname.startsWith('/api/')) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    const signInUrl = new URL('/auth/signin', request.url);
-    signInUrl.searchParams.set('callbackUrl', request.url);
-    return NextResponse.redirect(signInUrl);
-  }
-
+export async function middleware(_request: NextRequest) {
   return NextResponse.next();
 }
 

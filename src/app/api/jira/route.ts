@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchJson, withCache, JIRA_BASE, JIRA_AUTH, OPS_PROJECTS } from '@/lib/api';
+import { fetchJson, withCache, JIRA_BASE, JIRA_AUTH, ALL_PROJECTS } from '@/lib/api';
 import type { JiraApiResponse } from '@/types';
 
 interface JiraSearchResponse {
@@ -16,7 +16,7 @@ export async function GET() {
 
   try {
     const result = await withCache('jira-ops', CACHE_TTL, async () => {
-      const projectList = OPS_PROJECTS.join(', ');
+      const projectList = ALL_PROJECTS.join(', ');
 
       // Two parallel JQL queries instead of 8 sequential ones
       const [activeData, doneData] = await Promise.all([

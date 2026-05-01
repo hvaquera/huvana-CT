@@ -123,8 +123,8 @@ export interface ActualsResponse {
 
 // ─── Dashboard UI ────────────────────────────────────────────────────────────
 
-export type AreaKey = 'VBTLEGAL' | 'VBTFINANCE' | 'VBTGTM' | 'VBTOP';
-export type FilterValue = 'all' | AreaKey | 'actuals' | 'delivery' | 'kpis' | 'reports';
+export type AreaKey = 'KAN' | 'WWMATA';
+export type FilterValue = 'all' | AreaKey | 'actuals' | 'kpis' | 'reports';
 export type StatusCategory = 'todo' | 'inProgress' | 'recurring' | 'blocked' | 'done' | 'other';
 export type ActualsView = 'person' | 'project';
 
@@ -139,4 +139,62 @@ export interface EpicProgress {
   total: number;
   done: number;
   projectKey: string;
+}
+
+// ─── Asana ───────────────────────────────────────────────────────────────────
+
+export interface AsanaTask {
+  gid: string;
+  name: string;
+  completed: boolean;
+  assignee: { gid: string; name: string } | null;
+  due_on: string | null;
+  notes: string;
+  parent: { gid: string; name: string } | null;
+  memberships: { section: { gid: string; name: string } }[];
+  created_at: string;
+  modified_at: string;
+}
+
+export interface AsanaProject {
+  gid: string;
+  name: string;
+  resource_type: string;
+}
+
+export interface AsanaApiResponse {
+  issues: JiraIssue[]; // normalized to JiraIssue shape
+}
+
+// ─── Toggl ───────────────────────────────────────────────────────────────────
+
+export interface TogglTimeEntry {
+  id: number;
+  workspace_id: number;
+  project_id: number | null;
+  task_id: number | null;
+  billable: boolean;
+  start: string;
+  stop: string;
+  duration: number; // seconds
+  description: string;
+  user_id: number;
+}
+
+export interface TogglProject {
+  id: number;
+  name: string;
+  client_id: number | null;
+  client_name: string | null;
+  billable: boolean;
+  rate: number | null;
+  actual_hours: number | null;
+  integration_provider?: string;
+  integration_ext_id?: string;
+}
+
+export interface TogglUser {
+  uid: number;
+  name: string;
+  email: string;
 }

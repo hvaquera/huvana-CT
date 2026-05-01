@@ -24,7 +24,8 @@ export default function TimeActualsTab() {
   const fetchActuals = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/tempo/actuals?year=${year}&month=${month}`);
+      const timeEndpoint = process.env.NEXT_PUBLIC_TIME_TOOL === 'toggl' ? '/api/toggl/actuals' : '/api/tempo/actuals';
+      const res = await fetch(`${timeEndpoint}?year=${year}&month=${month}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: ActualsResponse = await res.json();
       setData(json);

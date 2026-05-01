@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Loader2, RefreshCw, ChevronDown, ChevronUp, X, LogOut } from 'lucide-react';
-import { signOut } from 'next-auth/react';
+import { RefreshCw, ChevronDown, ChevronUp, X, Settings } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import LoadingProgress from '@/components/dashboard/LoadingProgress';
 import OverdueBlock from '@/components/dashboard/OverdueBlock';
@@ -11,8 +10,6 @@ import TaskSearch from '@/components/dashboard/TaskSearch';
 import TaskCard from '@/components/dashboard/TaskCard';
 import OpsDetails from '@/components/dashboard/OpsDetails';
 import TimeActualsTab from '@/components/dashboard/TimeActualsTab';
-// Delivery tab hidden — moved to PSA
-// import DeliveryTab from '@/components/dashboard/DeliveryTab';
 import KPIsTab from '@/components/dashboard/KPIsTab';
 import ReportsTab from '@/components/dashboard/ReportsTab';
 import { REFRESH_INTERVAL_MS, categorizeStatus, STATUS_SORT_ORDER, AREA_MAP } from '@/lib/constants';
@@ -20,7 +17,6 @@ import type { JiraIssue, FilterValue, EpicProgress } from '@/types';
 
 export default function Dashboard() {
   const [issues, setIssues] = useState<JiraIssue[]>([]);
-  const [deliveryIssues, setDeliveryIssues] = useState<JiraIssue[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterValue>('all');
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
@@ -31,35 +27,19 @@ export default function Dashboard() {
   const fetchIssues = useCallback(async (showLoader = false) => {
     if (showLoader) setIsRefreshing(true);
     try {
-      // Fire all requests in parallel
-      const jiraPromise = fetch('/api/jira');
-      const deliveryPromise = fetch('/api/jira/delivery');
-      const deliveryAllPromise = fetch('/api/jira/delivery-all');
-
-      // Show dashboard as soon as ops data arrives (fastest)
-      const jiraRes = await jiraPromise;
+      const pmEndpoint = process.env.NEXT_PUBLIC_PM_TOOL === 'asana' ? '/api/asana' : '/api/jira';
+      const jiraRes = await fetch(pmEndpoint);
       if (jiraRes.ok) {
         const data = await jiraRes.json();
         setIssues(data.issues ?? []);
-      }
-      setLoading(false); // Render immediately with ops data
-
-      // Delivery data loads in background
-      const [deliveryRes, deliveryAllRes] = await Promise.all([deliveryPromise, deliveryAllPromise]);
-      if (deliveryAllRes.ok) {
-        const data = await deliveryAllRes.json();
-        setDeliveryIssues(data.issues ?? []);
-      } else if (deliveryRes.ok) {
-        const data = await deliveryRes.json();
-        setDeliveryIssues(data.issues ?? []);
       }
       setLastRefresh(new Date());
       setStaleDismissed(false);
       setStaleExpanded(false);
     } catch (err) {
       console.error('[Dashboard] Fetch error:', err);
-      setLoading(false);
     } finally {
+      setLoading(false);
       setIsRefreshing(false);
     }
   }, []);
@@ -71,11 +51,10 @@ export default function Dashboard() {
   }, [fetchIssues]);
 
   const isActuals = filter === 'actuals';
-  const isDelivery = filter === 'delivery';
   const isKPIs = filter === 'kpis';
 
   const areaIssues = useMemo(() => {
-    if (filter === 'all' || isActuals || isDelivery || isKPIs) return issues;
+    if (filter === 'all' || isActuals || isKPIs) return issues;
     return issues.filter((i) => i.fields.project.key === filter);
   }, [issues, filter, isActuals, isKPIs]);
 
@@ -99,11 +78,9 @@ export default function Dashboard() {
         return true;
       })
       .sort((a, b) => {
-        // Status category first: In Progress → Blocked → To Do → Recurring → Other
         const statusDiff = (STATUS_SORT_ORDER[categorizeStatus(a.fields.status.name)] ?? 4)
           - (STATUS_SORT_ORDER[categorizeStatus(b.fields.status.name)] ?? 4);
         if (statusDiff !== 0) return statusDiff;
-        // Within same status: due date ascending (no due date last)
         const aDate = a.fields.duedate ? new Date(a.fields.duedate).getTime() : Infinity;
         const bDate = b.fields.duedate ? new Date(b.fields.duedate).getTime() : Infinity;
         return aDate - bDate;
@@ -125,14 +102,12 @@ export default function Dashboard() {
     return progress;
   }, [areaIssues]);
 
-  // CT-5: Stale tasks — In Progress with no Jira activity in 3+ days
   const staleTasks = useMemo(() => {
-    const opsProjectKeys = new Set(Object.keys(AREA_MAP));
     return areaIssues.filter((i) => {
       if (categorizeStatus(i.fields.status.name) !== 'inProgress') return false;
       if (!i.fields.updated) return false;
       if (i.fields.assignee?.active === false) return false;
-      if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false; // epics are containers, not tasks
+      if (i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
       const daysSince = Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000);
       return daysSince >= 3 && daysSince <= 90;
     });
@@ -179,13 +154,13 @@ export default function Dashboard() {
             >
               <RefreshCw className={`h-4 w-4 text-slate-500 ${isRefreshing ? 'animate-spin' : ''}`} />
             </button>
-            <button
-              onClick={() => signOut()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 transition-colors cursor-pointer"
+            <a
+              href="/admin"
+              className="p-2 rounded-lg hover:bg-slate-200 transition-colors"
+              title="Admin Settings"
             >
-              <LogOut className="h-3.5 w-3.5" />
-              Sign out
-            </button>
+              <Settings className="h-4 w-4 text-slate-500" />
+            </a>
           </div>
         </div>
 
@@ -194,10 +169,9 @@ export default function Dashboard() {
           <Tabs value={filter} onValueChange={(v) => setFilter(v as FilterValue)}>
             <TabsList className="w-full justify-start overflow-x-auto flex-nowrap">
               <TabsTrigger value="all">All</TabsTrigger>
-              <TabsTrigger value="VBTLEGAL">Legal</TabsTrigger>
-              <TabsTrigger value="VBTFINANCE">Finance</TabsTrigger>
-              <TabsTrigger value="VBTGTM">GTM & Sales</TabsTrigger>
-              <TabsTrigger value="VBTOP">Operations</TabsTrigger>
+              {Object.entries(AREA_MAP).map(([key, label]) => (
+                <TabsTrigger key={key} value={key}>{label}</TabsTrigger>
+              ))}
               <TabsTrigger
                 value="actuals"
                 className="bg-indigo-600 text-white data-[state=active]:bg-indigo-700 data-[state=active]:text-white"
@@ -210,14 +184,6 @@ export default function Dashboard() {
               >
                 KPIs
               </TabsTrigger>
-              {/* Delivery tab hidden — moved to PSA
-              <TabsTrigger
-                value="delivery"
-                className="bg-emerald-600 text-white data-[state=active]:bg-emerald-700 data-[state=active]:text-white"
-              >
-                Delivery
-              </TabsTrigger>
-              */}
               <TabsTrigger
                 value="reports"
                 className="bg-amber-600 text-white data-[state=active]:bg-amber-700 data-[state=active]:text-white"
@@ -230,11 +196,9 @@ export default function Dashboard() {
 
         {isActuals && <TimeActualsTab />}
         {filter === 'kpis' && <KPIsTab jiraIssues={issues} />}
-        {/* Delivery tab hidden — moved to PSA */}
-        {/* {isDelivery && <DeliveryTab />} */}
-        {filter === 'reports' && <ReportsTab jiraIssues={issues} deliveryIssues={deliveryIssues} />}
+        {filter === 'reports' && <ReportsTab jiraIssues={issues} deliveryIssues={[]} />}
 
-        {!isActuals && !isDelivery && !isKPIs && filter !== 'reports' && (
+        {!isActuals && !isKPIs && filter !== 'reports' && (
           <div className="space-y-4">
             {/* 1. Overdue */}
             <OverdueBlock tasks={overdueTasks} showArea={showArea} />
@@ -282,7 +246,7 @@ export default function Dashboard() {
             {/* 2. Due in the Next X Days */}
             <UpcomingWork issues={areaIssues} showArea={showArea} />
 
-            {/* 3. In Progress + Search */}
+            {/* 3. Find Tasks */}
             <div>
               <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
                 Find Tasks
