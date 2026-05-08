@@ -101,8 +101,34 @@ export function formatDueDate(duedate: string): { label: string; isOverdue: bool
 
 export function formatDisplayName(name: string): string {
   if (!name) return 'Unassigned';
-  if (!name.includes(' ') && name.includes('.')) {
-    return name.split('.').map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+ 
+  // If it's an email address — extract the name part before @
+  // e.g. "hugo.vaquera@gmail.com" → "Hugo Vaquera"
+  if (name.includes('@')) {
+    const localPart = name.split('@')[0];
+    return localPart
+      .split('.')
+      .map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+      .join(' ');
   }
-  return name;
+ 
+  // If it's already a proper name (has a space), return as-is with proper casing
+  if (name.includes(' ')) {
+    return name
+      .split(' ')
+      .map(p => p.charAt(0).toUpperCase() + p.slice(1))
+      .join(' ');
+  }
+ 
+  // If it's a dot-separated name without @ (e.g. "hugo.vaquera")
+  if (name.includes('.')) {
+    return name
+      .split('.')
+      .map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+      .join(' ');
+  }
+ 
+  // Single word — just capitalize
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
+ 

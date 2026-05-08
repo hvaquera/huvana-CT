@@ -5,7 +5,6 @@ import { ExternalLink, ChevronDown, ChevronUp, AlertCircle } from 'lucide-react'
 import { getStatusConfig, categorizeStatus, formatDueDate, formatDisplayName, JIRA_BROWSE_URL } from '@/lib/constants';
 import type { JiraIssue } from '@/types';
 
-/** Extract plain text from Jira ADF (Atlassian Document Format) description. */
 function extractDescription(desc: unknown): string | null {
   if (!desc || typeof desc !== 'object') return null;
   try {
@@ -23,12 +22,9 @@ function extractDescription(desc: unknown): string | null {
   }
 }
 
-/** Calculate days since last Jira activity. Returns null if no updated field. */
 function daysSinceUpdate(updated: string | undefined): number | null {
   if (!updated) return null;
-  const now = new Date();
-  const then = new Date(updated);
-  return Math.floor((now.getTime() - then.getTime()) / 86400000);
+  return Math.floor((new Date().getTime() - new Date(updated).getTime()) / 86400000);
 }
 
 const STALE_THRESHOLD_DAYS = 3;
@@ -47,13 +43,9 @@ export default function TaskCard({ issue, showArea = false, compact = false }: T
   const statusCategory = categorizeStatus(issue.fields.status.name);
   const description = extractDescription(issue.fields.description);
 
-  const dueInfo = issue.fields.duedate
-    ? formatDueDate(issue.fields.duedate)
-    : null;
-
+  const dueInfo = issue.fields.duedate ? formatDueDate(issue.fields.duedate) : null;
   const isOverdue = dueInfo?.isOverdue && statusCategory !== 'done';
 
-  // CT-5: Task Aging — flag In Progress tasks with no activity
   const staleDays = daysSinceUpdate(issue.fields.updated);
   const isStale = statusCategory === 'inProgress' && staleDays !== null && staleDays >= STALE_THRESHOLD_DAYS;
   const isVeryStale = statusCategory === 'inProgress' && staleDays !== null && staleDays >= STALE_WARNING_DAYS;
@@ -65,6 +57,15 @@ export default function TaskCard({ issue, showArea = false, compact = false }: T
     recurring: 'bg-indigo-50 text-indigo-700',
     other: 'bg-slate-100 text-slate-600',
   };
+
+  // Detect Asana task (GID = 16+ digit number)
+  const isAsana = /^\d{16,}$/.test(issue.key);
+  const taskHref = isAsana
+    ? `https://app.asana.com/0/${issue.fields.project.key}/${issue.key}`
+    : `${JIRA_BROWSE_URL}/${issue.key}`;
+  const taskLabel = isAsana
+    ? issue.fields.project.name
+    : issue.key;
 
   return (
     <div
@@ -91,51 +92,46 @@ export default function TaskCard({ issue, showArea = false, compact = false }: T
 
       {/* Meta Row */}
       <div className="flex items-center flex-wrap gap-1.5 mt-1.5">
-        {/* Due date */}
         {dueInfo && (
           <span className={`text-xs font-medium ${isOverdue ? 'text-red-600' : 'text-slate-500'}`}>
             {dueInfo.label}
           </span>
         )}
 
-        {/* Status badge */}
         <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md ${badgeClass[statusCategory] ?? badgeClass.other}`}>
           {statusConfig.label}
         </span>
 
-        {/* CT-5: Stale badge */}
         {isStale && (
           <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md flex items-center gap-0.5 ${
-            isVeryStale
-              ? 'bg-red-50 text-red-600'
-              : 'bg-amber-50 text-amber-600'
+            isVeryStale ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600'
           }`}>
             <AlertCircle className="h-3 w-3" />
             No updates in {staleDays}d
           </span>
         )}
 
-        {/* Assignee */}
         {issue.fields.assignee && (
-          <span className="text-xs text-slate-500">{formatDisplayName(issue.fields.assignee.displayName)}</span>
+          <span className="text-xs text-slate-500">
+            {formatDisplayName(issue.fields.assignee.displayName)}
+          </span>
         )}
 
-        {/* Area badge (for All tab) */}
         {showArea && (
           <span className="text-[11px] font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
             {issue.fields.project.name}
           </span>
         )}
 
-        {/* Jira key */}
+        {/* Task link — shows project name for Asana, key for Jira */}
         <a
-          href={`${JIRA_BROWSE_URL}/${issue.key}`}
+          href={taskHref}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[11px] font-mono text-slate-400 hover:text-blue-600 hover:underline flex items-center gap-0.5 ml-auto"
+          className="text-[11px] font-medium text-slate-400 hover:text-blue-600 hover:underline flex items-center gap-0.5 ml-auto"
           onClick={(e) => e.stopPropagation()}
         >
-          {issue.key}
+          {taskLabel}
           <ExternalLink className="h-2.5 w-2.5" />
         </a>
       </div>
@@ -146,7 +142,7 @@ export default function TaskCard({ issue, showArea = false, compact = false }: T
           <p className="text-[13px] text-slate-600 leading-relaxed">{description}</p>
           {staleDays !== null && staleDays >= STALE_THRESHOLD_DAYS && (
             <p className="text-[11px] text-slate-400 mt-1.5">
-              Last Jira activity: {staleDays} days ago
+              Last activity: {staleDays} days ago
             </p>
           )}
         </div>

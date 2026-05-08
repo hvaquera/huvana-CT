@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { User, GitCommit, Clock, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
+import { User, GitCommit, Clock, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, TrendingUp, Heart } from 'lucide-react';
 import { categorizeStatus } from '@/lib/constants';
 import type { JiraIssue } from '@/types';
 
@@ -13,7 +13,7 @@ interface PeoplePerformanceTabProps {
 
 interface PersonProfile {
   name: string;
-  email: string;
+  displayName: string;
   totalTasks: number;
   doneTasks: number;
   overdueTasks: number;
@@ -27,7 +27,62 @@ interface PersonProfile {
   lastActive: string | null;
   score: number;
   risk: 'strong' | 'steady' | 'watch';
+  sentiment: number; // 1-5
+  sentimentTrend: 'up' | 'down' | 'stable';
+  sentimentNote: string;
 }
+
+// Normalize any name format to "First Last"
+function normalizeName(raw: string): string {
+  if (!raw) return '';
+  // Email → take local part before @
+  if (raw.includes('@')) {
+    const local = raw.split('@')[0];
+    return local.split('.').map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+  }
+  // Already has space → proper case
+  if (raw.includes(' ')) {
+    return raw.split(' ').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+  }
+  // dot-separated without @
+  if (raw.includes('.')) {
+    return raw.split('.').map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+  }
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+// Check if two names refer to the same person
+function namesMatch(a: string, b: string): boolean {
+  const na = normalizeName(a).toLowerCase();
+  const nb = normalizeName(b).toLowerCase();
+  if (na === nb) return true;
+  // Check if first names match (at least)
+  const [fa] = na.split(' ');
+  const [fb] = nb.split(' ');
+  return fa.length > 2 && fa === fb;
+}
+
+// Hardcoded sentiment data — replace with Slack bot survey data when available
+const SENTIMENT_DATA: Record<string, { score: number; trend: 'up' | 'down' | 'stable'; note: string }> = {
+  'Hugo Vaquera': { score: 4.2, trend: 'up', note: 'Energized by new tooling work this sprint' },
+  'hugo': { score: 4.2, trend: 'up', note: 'Energized by new tooling work this sprint' },
+};
+
+function getSentiment(name: string) {
+  const normalized = normalizeName(name);
+  return SENTIMENT_DATA[normalized] ?? SENTIMENT_DATA[name] ?? {
+    score: 3.8,
+    trend: 'stable' as const,
+    note: 'Weekly pulse not yet connected — Slack bot coming soon',
+  };
+}
+
+const sentimentEmoji = (score: number) => {
+  if (score >= 4.5) return '😄';
+  if (score >= 3.5) return '🙂';
+  if (score >= 2.5) return '😐';
+  return '😟';
+};
 
 export default function PeoplePerformanceTab({ issues, timeActuals, githubData }: PeoplePerformanceTabProps) {
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -37,94 +92,122 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
     const now = new Date();
     now.setHours(0, 0, 0, 0);
 
-    // Group tasks by person
     const personMap = new Map<string, PersonProfile>();
 
+    // Helper to get or create person by raw name
+    const getOrCreate = (rawName: string): PersonProfile | null => {
+      if (!rawName) return null;
+      const displayName = normalizeName(rawName);
+      if (!displayName) return null;
+
+      // Check if this person already exists under a different key
+      for (const [key, p] of personMap) {
+        if (namesMatch(key, rawName) || namesMatch(p.displayName, rawName)) {
+          return p;
+        }
+      }
+
+      const sentiment = getSentiment(rawName);
+      const profile: PersonProfile = {
+        name: rawName,
+        displayName,
+        totalTasks: 0,
+        doneTasks: 0,
+        overdueTasks: 0,
+        inProgressTasks: 0,
+        staleTasks: 0,
+        projects: [],
+        hoursLogged: 0,
+        commits: 0,
+        commitsPerWeek: 0,
+        repos: [],
+        lastActive: null,
+        score: 0,
+        risk: 'steady',
+        sentiment: sentiment.score,
+        sentimentTrend: sentiment.trend,
+        sentimentNote: sentiment.note,
+      };
+      personMap.set(displayName, profile);
+      return profile;
+    };
+
+    // 1. Tasks from Jira/Asana
     for (const issue of issues) {
       const assignee = issue.fields.assignee;
       if (!assignee) continue;
-      const name = assignee.displayName;
-      const email = assignee.accountId ?? name;
+      const p = getOrCreate(assignee.displayName);
+      if (!p) continue;
 
-      if (!personMap.has(name)) {
-        personMap.set(name, {
-          name,
-          email,
-          totalTasks: 0,
-          doneTasks: 0,
-          overdueTasks: 0,
-          inProgressTasks: 0,
-          staleTasks: 0,
-          projects: [],
-          hoursLogged: 0,
-          commits: 0,
-          commitsPerWeek: 0,
-          repos: [],
-          lastActive: null,
-          score: 0,
-          risk: 'steady',
-        });
-      }
-
-      const p = personMap.get(name)!;
       p.totalTasks++;
-
       const status = categorizeStatus(issue.fields.status.name);
       if (status === 'done') p.doneTasks++;
       if (status === 'inProgress') p.inProgressTasks++;
 
-      // Overdue
       if (issue.fields.duedate) {
         const due = new Date(issue.fields.duedate);
         due.setHours(0, 0, 0, 0);
         if (due < now && status !== 'done') p.overdueTasks++;
       }
 
-      // Stale
       if (status === 'inProgress' && issue.fields.updated) {
         const daysSince = Math.floor((Date.now() - new Date(issue.fields.updated).getTime()) / 86400000);
         if (daysSince >= 3) p.staleTasks++;
       }
 
-      // Projects
       const projName = issue.fields.project.name;
-      if (!p.projects.includes(projName)) p.projects.push(projName);
+      if (projName && !p.projects.includes(projName)) p.projects.push(projName);
     }
 
-    // Merge time actuals
-    for (const person of (timeActuals?.people ?? [])) {
-      // Match by name (fuzzy)
-      const match = Array.from(personMap.values()).find(p =>
-        p.name.toLowerCase().includes(person.name.toLowerCase().split(' ')[0]) ||
-        person.name.toLowerCase().includes(p.name.toLowerCase().split(' ')[0])
-      );
-      if (match) {
-        match.hoursLogged = person.totalHours ?? 0;
+    // 2. Time actuals — try to match from any source
+    const timePeople = timeActuals?.people ?? [];
+    for (const tp of timePeople) {
+      let matched = false;
+      for (const p of personMap.values()) {
+        if (namesMatch(p.name, tp.name) || namesMatch(p.displayName, tp.name)) {
+          p.hoursLogged = Math.max(p.hoursLogged, tp.totalHours ?? 0);
+          matched = true;
+          break;
+        }
+      }
+      // If no task match but person has hours — add them
+      if (!matched && tp.totalHours > 0) {
+        const p = getOrCreate(tp.name);
+        if (p) p.hoursLogged = tp.totalHours;
       }
     }
 
-    // Merge GitHub data
+    // 3. GitHub data
     for (const repo of (githubData?.repos ?? [])) {
       for (const contributor of (repo.people ?? [])) {
-        const match = Array.from(personMap.values()).find(p =>
-          p.name.toLowerCase().includes(contributor.name.toLowerCase().split(' ')[0]) ||
-          contributor.name.toLowerCase().includes(p.name.toLowerCase().split(' ')[0])
-        );
-        if (match) {
-          match.commits += contributor.commits ?? 0;
-          match.commitsPerWeek += contributor.commitsPerWeek ?? 0;
-          if (!match.repos.includes(repo.repo)) match.repos.push(repo.repo);
-          if (contributor.daysSinceLastCommit !== null) {
-            const lastCommitDate = new Date(Date.now() - (contributor.daysSinceLastCommit * 86400000));
-            match.lastActive = lastCommitDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        let matched = false;
+        for (const p of personMap.values()) {
+          if (namesMatch(p.name, contributor.name) || namesMatch(p.displayName, contributor.name)) {
+            p.commits += contributor.commits ?? 0;
+            p.commitsPerWeek += contributor.commitsPerWeek ?? 0;
+            if (!p.repos.includes(repo.repo)) p.repos.push(repo.repo);
+            if (contributor.daysSinceLastCommit !== null) {
+              const lastCommitDate = new Date(Date.now() - (contributor.daysSinceLastCommit * 86400000));
+              p.lastActive = lastCommitDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            }
+            matched = true;
+            break;
+          }
+        }
+        if (!matched && (contributor.commits ?? 0) > 0) {
+          const p = getOrCreate(contributor.name);
+          if (p) {
+            p.commits = contributor.commits ?? 0;
+            p.commitsPerWeek = contributor.commitsPerWeek ?? 0;
+            if (!p.repos.includes(repo.repo)) p.repos.push(repo.repo);
           }
         }
       }
     }
 
-    // Calculate score per person
+    // 4. Score each person
     for (const p of personMap.values()) {
-      let score = 70; // baseline
+      let score = 70;
       if (p.totalTasks > 0) {
         score -= Math.round((p.overdueTasks / p.totalTasks) * 30);
         score -= Math.round((p.staleTasks / p.totalTasks) * 20);
@@ -153,21 +236,27 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
       <div className="flex items-center justify-between">
         <div>
           <h2 className="font-bold text-slate-900">People Performance</h2>
-          <p className="text-xs text-slate-400 mt-0.5">Tasks · Time · Code — unified view per engineer</p>
+          <p className="text-xs text-slate-400 mt-0.5">Tasks · Time · Code · Sentiment — unified view per engineer</p>
         </div>
         <div className="flex gap-1 bg-white border border-slate-200 rounded-lg p-1">
           {(['week', 'month', 'quarter'] as const).map(p => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`text-xs px-2.5 py-1 rounded-md transition-all capitalize ${
-                period === p ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
+            <button key={p} onClick={() => setPeriod(p)} className={`text-xs px-2.5 py-1 rounded-md transition-all capitalize ${period === p ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-800'}`}>
               {p === 'week' ? 'This Week' : p === 'month' ? 'This Month' : 'Quarter'}
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Sentiment coming soon banner */}
+      <div className="bg-violet-50 border border-violet-200 rounded-xl px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Heart className="h-4 w-4 text-violet-500" />
+          <div>
+            <span className="text-xs font-semibold text-violet-800">Team Pulse — Sentiment Tracking</span>
+            <p className="text-[10px] text-violet-500 mt-0.5">Weekly Slack bot survey · Anonymous · 2 questions · Friday PM</p>
+          </div>
+        </div>
+        <span className="text-[10px] bg-violet-100 text-violet-600 px-2 py-1 rounded-full font-medium">🔜 Connecting Slack Bot</span>
       </div>
 
       {/* Team summary */}
@@ -177,15 +266,11 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
           <div className="text-xs text-slate-400 mt-0.5">Active Engineers</div>
         </div>
         <div className="bg-white rounded-xl border border-slate-200 p-4 text-center">
-          <div className="text-2xl font-bold text-emerald-600">
-            {people.filter(p => p.risk === 'strong').length}
-          </div>
+          <div className="text-2xl font-bold text-emerald-600">{people.filter(p => p.risk === 'strong').length}</div>
           <div className="text-xs text-slate-400 mt-0.5">Performing Strong</div>
         </div>
         <div className="bg-white rounded-xl border border-slate-200 p-4 text-center">
-          <div className="text-2xl font-bold text-amber-600">
-            {people.filter(p => p.risk === 'watch').length}
-          </div>
+          <div className="text-2xl font-bold text-amber-600">{people.filter(p => p.risk === 'watch').length}</div>
           <div className="text-xs text-slate-400 mt-0.5">Need Attention</div>
         </div>
       </div>
@@ -198,60 +283,50 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
       ) : (
         people.map(person => {
           const cfg = riskConfig[person.risk];
-          const isExpanded = expanded === person.name;
+          const isExpanded = expanded === person.displayName;
 
           return (
-            <div key={person.name} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-              {/* Person header */}
-              <div
-                onClick={() => setExpanded(isExpanded ? null : person.name)}
-                className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50 transition-colors"
-              >
+            <div key={person.displayName} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              <div onClick={() => setExpanded(isExpanded ? null : person.displayName)} className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50 transition-colors">
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-full bg-slate-900 flex items-center justify-center flex-shrink-0">
                     <User className="h-4 w-4 text-white" />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold text-slate-900 text-sm">{person.name}</span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${cfg.bg} ${cfg.color}`}>
-                        {cfg.label}
+                      <span className="font-semibold text-slate-900 text-sm">{person.displayName}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${cfg.bg} ${cfg.color}`}>{cfg.label}</span>
+                      {/* Sentiment pill */}
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 font-medium">
+                        {sentimentEmoji(person.sentiment)} {person.sentiment.toFixed(1)}
+                        {person.sentimentTrend === 'up' ? ' ↑' : person.sentimentTrend === 'down' ? ' ↓' : ''}
                       </span>
                     </div>
-                    <div className="flex items-center gap-3 mt-0.5">
-                      <span className="text-xs text-slate-400">{person.projects.join(', ') || 'No projects'}</span>
-                    </div>
+                    <div className="text-xs text-slate-400 mt-0.5">{person.projects.join(', ') || 'No projects assigned'}</div>
                   </div>
                 </div>
 
-                {/* Quick stats */}
                 <div className="flex items-center gap-4">
                   <div className="text-center hidden sm:block">
                     <div className="text-sm font-bold text-slate-900">{person.totalTasks}</div>
                     <div className="text-[10px] text-slate-400">tasks</div>
                   </div>
                   <div className="text-center hidden sm:block">
-                    <div className="text-sm font-bold text-indigo-600">{person.hoursLogged}h</div>
+                    <div className="text-sm font-bold text-indigo-600">{person.hoursLogged > 0 ? `${person.hoursLogged}h` : '—'}</div>
                     <div className="text-[10px] text-slate-400">logged</div>
                   </div>
                   <div className="text-center hidden sm:block">
-                    <div className="text-sm font-bold text-slate-700">{person.commits}</div>
+                    <div className="text-sm font-bold text-slate-700">{person.commits > 0 ? person.commits : '—'}</div>
                     <div className="text-[10px] text-slate-400">commits</div>
                   </div>
                   <div className="text-center">
-                    <div className={`text-lg font-bold ${
-                      person.score >= 75 ? 'text-emerald-600' : person.score >= 50 ? 'text-blue-600' : 'text-amber-600'
-                    }`}>{person.score}</div>
+                    <div className={`text-lg font-bold ${person.score >= 75 ? 'text-emerald-600' : person.score >= 50 ? 'text-blue-600' : 'text-amber-600'}`}>{person.score}</div>
                     <div className="text-[10px] text-slate-400">score</div>
                   </div>
-                  {isExpanded
-                    ? <ChevronUp className="h-4 w-4 text-slate-400" />
-                    : <ChevronDown className="h-4 w-4 text-slate-400" />
-                  }
+                  {isExpanded ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
                 </div>
               </div>
 
-              {/* Expanded detail */}
               {isExpanded && (
                 <div className="border-t border-slate-100 p-4 bg-slate-50 space-y-4">
 
@@ -263,9 +338,7 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
                         <span className="text-[10px] text-slate-500 font-medium">COMPLETED</span>
                       </div>
                       <div className="text-xl font-bold text-emerald-600">{person.doneTasks}</div>
-                      <div className="text-[10px] text-slate-400">
-                        {person.totalTasks > 0 ? Math.round((person.doneTasks / person.totalTasks) * 100) : 0}% of total
-                      </div>
+                      <div className="text-[10px] text-slate-400">{person.totalTasks > 0 ? Math.round((person.doneTasks / person.totalTasks) * 100) : 0}% of total</div>
                     </div>
 
                     <div className={`bg-white rounded-lg p-3 border ${person.overdueTasks > 0 ? 'border-red-200' : 'border-slate-200'}`}>
@@ -273,12 +346,8 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
                         <AlertTriangle className={`h-3 w-3 ${person.overdueTasks > 0 ? 'text-red-500' : 'text-slate-300'}`} />
                         <span className="text-[10px] text-slate-500 font-medium">OVERDUE</span>
                       </div>
-                      <div className={`text-xl font-bold ${person.overdueTasks > 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                        {person.overdueTasks}
-                      </div>
-                      <div className="text-[10px] text-slate-400">
-                        {person.staleTasks} stale in-progress
-                      </div>
+                      <div className={`text-xl font-bold ${person.overdueTasks > 0 ? 'text-red-600' : 'text-slate-400'}`}>{person.overdueTasks}</div>
+                      <div className="text-[10px] text-slate-400">{person.staleTasks} stale in-progress</div>
                     </div>
 
                     <div className="bg-white rounded-lg p-3 border border-slate-200">
@@ -286,10 +355,8 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
                         <Clock className="h-3 w-3 text-indigo-500" />
                         <span className="text-[10px] text-slate-500 font-medium">TIME LOGGED</span>
                       </div>
-                      <div className="text-xl font-bold text-indigo-600">{person.hoursLogged}h</div>
-                      <div className="text-[10px] text-slate-400">
-                        {person.hoursLogged === 0 ? '⚠️ No time tracked' : 'this month'}
-                      </div>
+                      <div className="text-xl font-bold text-indigo-600">{person.hoursLogged > 0 ? `${person.hoursLogged}h` : '—'}</div>
+                      <div className="text-[10px] text-slate-400">{person.hoursLogged === 0 ? '⚠️ No time tracked' : 'this month'}</div>
                     </div>
 
                     <div className="bg-white rounded-lg p-3 border border-slate-200">
@@ -297,10 +364,26 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
                         <GitCommit className="h-3 w-3 text-slate-500" />
                         <span className="text-[10px] text-slate-500 font-medium">CODE ACTIVITY</span>
                       </div>
-                      <div className="text-xl font-bold text-slate-700">{person.commits}</div>
-                      <div className="text-[10px] text-slate-400">
-                        {person.commits > 0 ? `${person.commitsPerWeek.toFixed(1)}/week avg` : 'No commits tracked'}
+                      <div className="text-xl font-bold text-slate-700">{person.commits > 0 ? person.commits : '—'}</div>
+                      <div className="text-[10px] text-slate-400">{person.commits > 0 ? `${person.commitsPerWeek.toFixed(1)}/week avg` : 'No commits tracked'}</div>
+                    </div>
+                  </div>
+
+                  {/* Sentiment detail */}
+                  <div className="bg-violet-50 rounded-lg p-3 border border-violet-100">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <Heart className="h-3 w-3 text-violet-500" />
+                        <span className="text-[10px] text-violet-700 font-semibold">TEAM PULSE</span>
                       </div>
+                      <span className="text-sm font-bold text-violet-700">
+                        {sentimentEmoji(person.sentiment)} {person.sentiment.toFixed(1)}/5
+                        <span className="text-[10px] ml-1">{person.sentimentTrend === 'up' ? '↑ improving' : person.sentimentTrend === 'down' ? '↓ declining' : '→ stable'}</span>
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-violet-600 italic">&quot;{person.sentimentNote}&quot;</p>
+                    <div className="mt-2 h-1.5 bg-violet-200 rounded-full overflow-hidden">
+                      <div className="h-full bg-violet-500 rounded-full" style={{ width: `${(person.sentiment / 5) * 100}%` }} />
                     </div>
                   </div>
 
@@ -325,21 +408,12 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
                       <span className="text-xs font-bold text-slate-700">{person.score}/100</span>
                     </div>
                     <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${
-                          person.score >= 75 ? 'bg-emerald-500' : person.score >= 50 ? 'bg-blue-500' : 'bg-amber-500'
-                        }`}
-                        style={{ width: `${person.score}%` }}
-                      />
+                      <div className={`h-full rounded-full ${person.score >= 75 ? 'bg-emerald-500' : person.score >= 50 ? 'bg-blue-500' : 'bg-amber-500'}`} style={{ width: `${person.score}%` }} />
                     </div>
                   </div>
 
-                  {/* Last active */}
                   {person.lastActive && (
-                    <p className="text-xs text-slate-400">
-                      <TrendingUp className="h-3 w-3 inline mr-1" />
-                      Last commit: {person.lastActive}
-                    </p>
+                    <p className="text-xs text-slate-400"><TrendingUp className="h-3 w-3 inline mr-1" />Last commit: {person.lastActive}</p>
                   )}
                 </div>
               )}
