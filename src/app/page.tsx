@@ -1,5 +1,6 @@
 'use client';
 
+import ComplianceTracker from '@/components/dashboard/ComplianceTracker';
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { RefreshCw, Settings, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -18,7 +19,7 @@ import AICopilot from '@/components/dashboard/AICopilot';
 import { REFRESH_INTERVAL_MS, categorizeStatus, STATUS_SORT_ORDER } from '@/lib/constants';
 import type { JiraIssue, EpicProgress } from '@/types';
 
-type TabValue = 'all' | 'ops' | 'delivery' | 'health' | 'people' | 'actuals' | 'kpis' | 'reports';
+type TabValue = 'all' | 'compliance' | 'ops' | 'delivery' | 'health' | 'people' | 'actuals' | 'kpis' | 'reports' ;
 
 function getProjectCategories() {
   if (typeof window === 'undefined') return { ops: [] as string[], delivery: [] as string[] };
@@ -232,6 +233,9 @@ export default function Dashboard() {
               <TabsTrigger value="reports" className="bg-amber-600 text-white data-[state=active]:bg-amber-700 data-[state=active]:text-white">
                 Reports
               </TabsTrigger>
+              <TabsTrigger value="compliance" className="bg-rose-600 text-white data-[state=active]:bg-rose-700 data-[state=active]:text-white">
+                Requerimientos
+              </TabsTrigger>
             </TabsList>
           </Tabs>
 
@@ -258,6 +262,7 @@ export default function Dashboard() {
         {filter === 'actuals' && <TimeActualsTab />}
         {filter === 'kpis' && <KPIsTab jiraIssues={issues} />}
         {filter === 'reports' && <ReportsTab jiraIssues={issues} deliveryIssues={[]} />}
+        {filter === 'compliance' && <ComplianceTracker />}
 
         {isTaskTab && (
           <div className="space-y-4">
