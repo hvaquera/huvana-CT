@@ -147,22 +147,22 @@ export default function TimeActualsTab() {
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-600">Total Hours</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-indigo-600">{data.totalHours.toLocaleString()}h</div>
-            <p className="text-xs text-slate-400 mt-1">{data.totalWorklogs.toLocaleString()} worklogs</p>
+            <div className="text-3xl font-bold text-indigo-600">{(data?.totalHours ?? 0).toLocaleString()}h</div>
+            <p className="text-xs text-slate-400 mt-1">{(data?.totalWorklogs ?? 0).toLocaleString()} worklogs</p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-600">People</CardTitle></CardHeader>
-          <CardContent><div className="text-3xl font-bold">{data.totalPeople}</div></CardContent>
+          <CardContent><div className="text-3xl font-bold">{data?.totalPeople ?? 0}</div></CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-600">Projects</CardTitle></CardHeader>
-          <CardContent><div className="text-3xl font-bold">{data.totalProjects}</div></CardContent>
+          <CardContent><div className="text-3xl font-bold">{data?.totalProjects ?? 0}</div></CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-600">Avg / Person</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{data.totalPeople > 0 ? Math.round(data.totalHours / data.totalPeople) : 0}h</div>
+            <div className="text-3xl font-bold">{(data?.totalPeople ?? 0) > 0 ? Math.round((data?.totalHours ?? 0) / (data?.totalPeople ?? 1)) : 0}h</div>
           </CardContent>
         </Card>
       </div>
