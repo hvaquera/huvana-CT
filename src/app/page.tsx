@@ -166,7 +166,7 @@ export default function Dashboard() {
 
   const isTaskTab = ['all', 'ops', 'delivery'].includes(filter);
 
-  const tabs = [
+  const tabs: { value: string; label: string; icon: React.ComponentType<{ className?: string }>; badge?: number }[] = [
     { value: 'all', label: 'All', icon: LayoutDashboard },
     { value: 'ops', label: 'Internal Work', icon: Briefcase },
     { value: 'delivery', label: 'Delivery Work', icon: Truck },
