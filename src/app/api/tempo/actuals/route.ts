@@ -1,258 +1,69 @@
 import { NextResponse } from 'next/server';
-import { fetchTempoWorklogs, fetchJson, JIRA_BASE, JIRA_AUTH, round, withCache } from '@/lib/api';
-import { formatDisplayName } from '@/lib/constants';
-import type { ActualsResponse, ActualsPerson, ActualsProjectTotal } from '@/types';
+import { fetchTempoWorklogs, fetchJson, round, withCache, getApiConfig } from '@/lib/api';
 
-// ─── Issue Resolution ────────────────────────────────────────────────────────
-
-interface ResolvedIssue {
-  key: string;
-  summary: string;
-  projectKey: string;
-  projectName: string;
-}
-
-/**
- * Resolve Tempo issue IDs to Jira issue keys + project info + summary.
- *
- * Uses bulk JQL search (`id in (...)`) instead of individual /issue/{id} calls.
- * This reduces ~250 API calls to ~5, avoiding rate limits and timeouts
- * that caused false "unlinked" entries on slower connections.
- */
-async function resolveIssueIds(issueIds: string[]): Promise<Map<string, ResolvedIssue>> {
-  const cache = new Map<string, ResolvedIssue>();
-  const BATCH_SIZE = 50; // JQL supports up to ~50 IDs per query
-
-  for (let i = 0; i < issueIds.length; i += BATCH_SIZE) {
-    const batch = issueIds.slice(i, i + BATCH_SIZE);
-    const jql = `id in (${batch.join(',')})`;
-    try {
-      const data = await fetchJson<{ issues: Array<{ id: string; key: string; fields: { summary: string; project: { key: string; name: string } } }> }>(
-        `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${BATCH_SIZE}&fields=project,summary`,
-        { Authorization: `Basic ${JIRA_AUTH}` },
-      );
-      for (const issue of data.issues) {
-        cache.set(String(issue.id), {
-          key: issue.key,
-          summary: issue.fields.summary,
-          projectKey: issue.fields.project.key,
-          projectName: issue.fields.project.name,
-        });
-      }
-    } catch (err) {
-      console.error(`[resolveIssueIds] Batch failed for ${batch.length} issues:`, err);
-      // Fallback: resolve individually for this batch
-      const results = await Promise.allSettled(
-        batch.map(async (issueId) => {
-          const d = await fetchJson<{ key: string; fields: { summary: string; project: { key: string; name: string } } }>(
-            `${JIRA_BASE}/rest/api/2/issue/${issueId}?fields=project,summary`,
-            { Authorization: `Basic ${JIRA_AUTH}` },
-          );
-          return { issueId, key: d.key, summary: d.fields.summary, projectKey: d.fields.project.key, projectName: d.fields.project.name };
-        }),
-      );
-      for (const result of results) {
-        if (result.status === 'fulfilled') {
-          const { issueId, ...resolved } = result.value;
-          cache.set(issueId, resolved);
-        }
-      }
-    }
-  }
-
-  return cache;
-}
-
-// ─── User Name Resolution ────────────────────────────────────────────────────
-
-interface JiraUser {
-  accountId: string;
-  displayName: string;
-}
-
-/**
- * Resolve Tempo account IDs to display names via Jira user API.
- * Uses parallel batches of 25 for faster resolution.
- */
-async function resolveUserNames(accountIds: string[]): Promise<Map<string, string>> {
-  const cache = new Map<string, string>();
-  const BATCH_SIZE = 25;
-
-  for (let i = 0; i < accountIds.length; i += BATCH_SIZE) {
-    const batch = accountIds.slice(i, i + BATCH_SIZE);
-    const results = await Promise.allSettled(
-      batch.map(async (accountId) => {
-        const data = await fetchJson<JiraUser>(
-          `${JIRA_BASE}/rest/api/2/user?accountId=${accountId}`,
-          { Authorization: `Basic ${JIRA_AUTH}` },
-        );
-        return { accountId, displayName: data.displayName };
-      }),
-    );
-
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        cache.set(result.value.accountId, result.value.displayName);
-      }
-    }
-  }
-
-  return cache;
-}
-
-// ─── Route Handler ───────────────────────────────────────────────────────────
-
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const CACHE_TTL = 15 * 60 * 1000;
+const BATCH_SIZE = 100;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const year = parseInt(searchParams.get('year') ?? String(new Date().getFullYear()), 10);
-  const month = parseInt(searchParams.get('month') ?? String(new Date().getMonth() + 1), 10);
+  const year  = parseInt(searchParams.get('year')  ?? String(new Date().getFullYear()));
+  const month = parseInt(searchParams.get('month') ?? String(new Date().getMonth() + 1));
 
-  const from = `${year}-${String(month).padStart(2, '0')}-01`;
-  const lastDay = new Date(year, month, 0).getDate();
-  const to = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
-  const cacheKey = `actuals-${year}-${month}`;
+  const cfg = await getApiConfig();
+  if (!cfg.jiraToken) return NextResponse.json({ worklogs: [], byPerson: {}, byProject: {} });
+
+  const JIRA_AUTH = cfg.jiraAuth;
+  const JIRA_BASE = cfg.jiraBase;
+  const TEMPO_TOKEN = cfg.jiraToken; // tempo uses separate token — check config
+
+  const from = `${year}-${String(month).padStart(2,'0')}-01`;
+  const to   = new Date(year, month, 0).toISOString().split('T')[0];
+  const cacheKey = `tempo-actuals-${from}-${to}`;
 
   try {
-    const data = await withCache<ActualsResponse>(cacheKey, CACHE_TTL, async () => {
-      // 1. Fetch all worklogs for the month
-      const worklogs = await fetchTempoWorklogs(from, to);
+    const result = await withCache(cacheKey, CACHE_TTL, async () => {
+      const worklogs = await fetchTempoWorklogs(cfg.jiraToken!, from, to);
+      if (!worklogs.length) return { worklogs: [], byPerson: {}, byProject: {} };
 
-      // 2. Collect ALL unique issue IDs for summary resolution
-      const allIssueIds = new Set<string>();
-      const keyToIdMap = new Map<string, string>(); // issue.key → issue.id for cross-referencing
+      const issueIds = [...new Set(worklogs.map(w => w.issue?.id).filter(Boolean))];
+      const issueMap = new Map<number, { project: string; summary: string }>();
+
+      for (let i = 0; i < issueIds.length; i += BATCH_SIZE) {
+        const batch = issueIds.slice(i, i + BATCH_SIZE);
+        const jql = `id in (${batch.join(',')})`;
+        try {
+          const data = await fetchJson<{ issues: { id: string; fields: { project: { key: string }; summary: string } }[] }>(
+            `${JIRA_BASE}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${BATCH_SIZE}&fields=project,summary`,
+            { Authorization: `Basic ${JIRA_AUTH}` },
+          );
+          for (const issue of data.issues ?? []) {
+            issueMap.set(parseInt(issue.id), { project: issue.fields.project.key, summary: issue.fields.summary });
+          }
+        } catch {}
+      }
+
+      const byPerson: Record<string, { hours: number; issueCount: number }> = {};
+      const byProject: Record<string, number> = {};
+
       for (const w of worklogs) {
-        if (w.issue?.id) {
-          allIssueIds.add(String(w.issue.id));
-          if (w.issue.key) keyToIdMap.set(w.issue.key, String(w.issue.id));
-        }
-      }
-      const issueCache = await resolveIssueIds([...allIssueIds]);
-      const unresolved = [...allIssueIds].filter((id) => !issueCache.has(id));
-      if (unresolved.length > 0) {
-        console.warn(`[Tempo/Actuals] ${unresolved.length}/${allIssueIds.size} issues failed to resolve:`, unresolved.slice(0, 10));
-      }
-      console.log(`[Tempo/Actuals] Resolved ${issueCache.size}/${allIssueIds.size} issues from ${worklogs.length} worklogs`);
+        const hours = round((w.timeSpentSeconds ?? 0) / 3600);
+        const name = w.author?.displayName ?? 'Unknown';
+        const issueInfo = w.issue?.id ? issueMap.get(w.issue.id) : null;
+        const project = issueInfo?.project ?? 'Unknown';
 
-      // 3. Resolve user account IDs → display names
-      const uniqueAccountIds = [...new Set(worklogs.map((w) => w.author?.accountId).filter(Boolean))] as string[];
-      const userCache = await resolveUserNames(uniqueAccountIds);
+        if (!byPerson[name]) byPerson[name] = { hours: 0, issueCount: 0 };
+        byPerson[name].hours = round(byPerson[name].hours + hours);
+        byPerson[name].issueCount++;
 
-      // 4. Build person × project × task matrix
-      const personMap = new Map<string, { name: string; totalHours: number; projects: Map<string, { projectName: string; hours: number; tasks: Map<string, { summary: string; hours: number; entries: Array<{ date: string; hours: number; comment: string }> }> }> }>();
-      const projectTotals = new Map<string, { projectName: string; hours: number; peopleSet: Set<string> }>();
-      let totalHours = 0;
-
-      for (const wl of worklogs) {
-        const authorId = wl.author?.accountId ?? 'unknown';
-        const authorName = formatDisplayName(wl.author?.displayName || userCache.get(authorId) || authorId);
-        const hours = (wl.timeSpentSeconds ?? 0) / 3600;
-        totalHours += hours;
-
-        // Resolve project + issue key from cache
-        // Note: Tempo v4 never returns issue.key, only issue.id
-        let projectKey = '(unlinked)';
-        let projectName = '(No Jira Issue)';
-        let issueKey = '(no-issue)';
-
-        if (wl.issue?.id) {
-          const resolved = issueCache.get(String(wl.issue.id));
-          if (resolved) {
-            issueKey = resolved.key;
-            projectKey = resolved.projectKey;
-            projectName = resolved.projectName;
-          }
-        }
-
-        // Use Jira issue summary (from resolver), fall back to issue key, never use Tempo description as title
-        const resolvedIssue = wl.issue?.id ? issueCache.get(String(wl.issue.id)) : undefined;
-        const taskSummary = resolvedIssue?.summary || issueKey;
-        const timeEntry = { date: wl.startDate, hours, comment: wl.description || '' };
-
-        // Accumulate person data
-        if (!personMap.has(authorId)) {
-          personMap.set(authorId, { name: authorName, totalHours: 0, projects: new Map() });
-        }
-        const person = personMap.get(authorId)!;
-        person.totalHours += hours;
-
-        const personProj = person.projects.get(projectKey);
-        if (personProj) {
-          personProj.hours += hours;
-          const existingTask = personProj.tasks.get(issueKey);
-          if (existingTask) {
-            existingTask.hours += hours;
-            existingTask.entries.push(timeEntry);
-          } else {
-            personProj.tasks.set(issueKey, { summary: taskSummary, hours, entries: [timeEntry] });
-          }
-        } else {
-          const tasks = new Map<string, { summary: string; hours: number; entries: Array<{ date: string; hours: number; comment: string }> }>();
-          tasks.set(issueKey, { summary: taskSummary, hours, entries: [timeEntry] });
-          person.projects.set(projectKey, { projectName, hours, tasks });
-        }
-
-        // Accumulate project totals
-        if (!projectTotals.has(projectKey)) {
-          projectTotals.set(projectKey, { projectName, hours: 0, peopleSet: new Set() });
-        }
-        const projTotal = projectTotals.get(projectKey)!;
-        projTotal.hours += hours;
-        projTotal.peopleSet.add(authorId);
+        byProject[project] = round((byProject[project] ?? 0) + hours);
       }
 
-      // 5. Format response
-      const people: ActualsPerson[] = [...personMap.entries()]
-        .map(([id, p]) => ({
-          id,
-          name: p.name,
-          totalHours: round(p.totalHours),
-          projects: [...p.projects.entries()]
-            .map(([key, proj]) => ({
-              projectKey: key,
-              projectName: proj.projectName,
-              hours: round(proj.hours),
-              percent: p.totalHours > 0 ? Math.round((proj.hours / p.totalHours) * 100) : 0,
-              tasks: [...proj.tasks.entries()]
-                .map(([issueKey, task]) => ({
-                  issueKey,
-                  summary: task.summary,
-                  hours: round(task.hours),
-                  entries: task.entries
-                    .map((e) => ({ date: e.date, hours: round(e.hours), comment: e.comment }))
-                    .sort((a, b) => a.date.localeCompare(b.date)),
-                }))
-                .sort((a, b) => b.hours - a.hours),
-            }))
-            .sort((a, b) => b.hours - a.hours),
-        }))
-        .sort((a, b) => b.totalHours - a.totalHours);
-
-      const projects: ActualsProjectTotal[] = [...projectTotals.entries()]
-        .map(([key, p]) => ({
-          projectKey: key,
-          projectName: p.projectName,
-          hours: round(p.hours),
-          people: p.peopleSet.size,
-          percent: totalHours > 0 ? Math.round((p.hours / totalHours) * 100) : 0,
-        }))
-        .sort((a, b) => b.hours - a.hours);
-
-      return {
-        period: { year, month, from, to },
-        totalHours: round(totalHours),
-        totalWorklogs: worklogs.length,
-        totalPeople: personMap.size,
-        totalProjects: projectTotals.size,
-        people,
-        projects,
-      };
+      return { worklogs: worklogs.slice(0, 200), byPerson, byProject };
     });
 
-    return NextResponse.json(data);
+    return NextResponse.json(result);
   } catch (error) {
-    console.error('[Tempo/Actuals] Error:', error);
-    return NextResponse.json({ error: 'Failed to fetch Tempo actuals' }, { status: 500 });
+    console.error('[Tempo actuals] Error:', error);
+    return NextResponse.json({ worklogs: [], byPerson: {}, byProject: {} });
   }
 }

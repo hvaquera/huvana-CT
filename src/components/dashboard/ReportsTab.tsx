@@ -207,10 +207,10 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
 
     const lastWeekHours: Record<string, number> = {};
     const allPeopleSet = new Set<string>();
-    tempoData.people.forEach((p) => {
+    (tempoData?.people ?? []).forEach((p) => {
       allPeopleSet.add(p.name);
       let weekHrs = 0;
-      p.projects.forEach((pr) => pr.tasks.forEach((t) => t.entries.forEach((e) => {
+      (p.projects ?? []).forEach((pr) => (pr.tasks ?? []).forEach((t) => (t.entries ?? []).forEach((e) => {
         const d = parseLocalDate(e.date);
         if (d >= lastMonday && d <= lastFriday) weekHrs += e.hours;
       })));
@@ -221,14 +221,14 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     const lowTimesheets = [...allPeopleSet].filter((n) => (lastWeekHours[n] ?? 0) > 0 && (lastWeekHours[n] ?? 0) < 20).map((n) => ({ name: n, hours: Math.round((lastWeekHours[n] ?? 0) * 10) / 10 })).sort((a, b) => a.hours - b.hours);
 
     const overtimeDays: Array<{ name: string; date: string; hours: number }> = [];
-    tempoData.people.forEach((p) => {
+    (tempoData?.people ?? []).forEach((p) => {
       const dayMap: Record<string, number> = {};
-      p.projects.forEach((pr) => pr.tasks.forEach((t) => t.entries.forEach((e) => { dayMap[e.date] = (dayMap[e.date] ?? 0) + e.hours; })));
+      (p.projects ?? []).forEach((pr) => (pr.tasks ?? []).forEach((t) => (t.entries ?? []).forEach((e) => { dayMap[e.date] = (dayMap[e.date] ?? 0) + e.hours; })));
       Object.entries(dayMap).forEach(([date, hrs]) => { if (hrs >= 9) overtimeDays.push({ name: p.name, date, hours: Math.round(hrs * 10) / 10 }); });
     });
 
     const tempoIssueKeys = new Set<string>();
-    tempoData.people.forEach((p) => p.projects.forEach((pr) => pr.tasks.forEach((t) => { if (t.issueKey) tempoIssueKeys.add(t.issueKey); })));
+    (tempoData?.people ?? []).forEach((p) => (p.projects ?? []).forEach((pr) => (pr.tasks ?? []).forEach((t) => { if (t?.issueKey) tempoIssueKeys.add(t.issueKey); })));
     const allIssuesCombined = [...(jiraIssues || []), ...(deliveryIssues || [])];
     const ghostTasks = allIssuesCombined.filter((i) => {
       if (categorizeStatus(i.fields.status.name) !== 'inProgress') return false;
@@ -244,8 +244,8 @@ export default function ReportsTab({ jiraIssues, deliveryIssues }: ReportsTabPro
     })).sort((a, b) => b.daysSilent - a.daysSilent);
 
     const weekendByPerson: Record<string, { hours: number; days: Set<string> }> = {};
-    tempoData.people.forEach((p) => {
-      p.projects.forEach((pr) => pr.tasks.forEach((t) => t.entries.forEach((e) => {
+    (tempoData?.people ?? []).forEach((p) => {
+      (p.projects ?? []).forEach((pr) => (pr.tasks ?? []).forEach((t) => (t.entries ?? []).forEach((e) => {
         const d = parseLocalDate(e.date).getDay();
         if (d === 0 || d === 6) {
           if (!weekendByPerson[p.name]) weekendByPerson[p.name] = { hours: 0, days: new Set() };

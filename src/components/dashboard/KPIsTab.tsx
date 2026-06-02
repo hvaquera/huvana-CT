@@ -167,7 +167,7 @@ function computeAreaKPIs(
   let compliancePercent = 100;
   let complianceDetail = '';
   if (tempoData) {
-    const tempoIds = new Set(tempoData.people.map(p => p.id));
+    const tempoIds = new Set((tempoData?.people ?? []).map(p => p.id));
     const logging = [...opsAssigneeMap.keys()].filter(id => tempoIds.has(id));
     const notLogging = [...opsAssigneeMap.entries()].filter(([id]) => !tempoIds.has(id));
     compliancePercent = opsAssigneeMap.size > 0 ? Math.round((logging.length / opsAssigneeMap.size) * 100) : 100;

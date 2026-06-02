@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { Settings, CheckCircle, Eye, EyeOff, RefreshCw, Plus, Trash2, ExternalLink } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────
@@ -77,6 +78,7 @@ export default function AdminPage() {
   // Load from localStorage on mount
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    // Load from localStorage as fallback
     const saved = localStorage.getItem('ct_tools');
     if (saved) {
       try { setTools(JSON.parse(saved)); } catch {}
@@ -85,13 +87,61 @@ export default function AdminPage() {
     if (savedProjects) {
       try { setDetectedProjects(JSON.parse(savedProjects)); } catch {}
     }
+    // Load from Supabase — overrides localStorage with server truth
+    fetch('/api/admin/config')
+      .then(r => r.json())
+      .then(config => {
+        if (!config) return;
+        setTools(prev => prev.map(t => {
+          if (t.id === 'jira')      return { ...t, token: config.jira_token ?? '', extra: config.jira_url ?? '', extra2: config.jira_email ?? '' };
+          if (t.id === 'asana')     return { ...t, token: config.asana_token ?? '', extra: config.asana_workspace_gid ?? '' };
+          if (t.id === 'harvest')   return { ...t, token: config.harvest_token ?? '', extra: config.harvest_account_id ?? '' };
+          if (t.id === 'toggl')     return { ...t, token: config.toggl_token ?? '', extra: config.toggl_workspace_id ?? '' };
+          if (t.id === 'github')    return { ...t, token: config.github_token ?? '', extra: config.github_owner ?? '' };
+          if (t.id === 'anthropic') return { ...t, token: config.anthropic_key ?? '' };
+          return t;
+        }));
+      })
+      .catch(() => {});
   }, []);
-
-  const saveTools = (updated: Tool[]) => {
+  const saveTools = async (updated: Tool[]) => {
     setTools(updated);
     localStorage.setItem('ct_tools', JSON.stringify(updated));
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+
+    // Build workspace payload from tools
+    const jira    = updated.find(t => t.id === 'jira');
+    const asana   = updated.find(t => t.id === 'asana');
+    const harvest = updated.find(t => t.id === 'harvest');
+    const toggl   = updated.find(t => t.id === 'toggl');
+    const github  = updated.find(t => t.id === 'github');
+    const anthropic = updated.find(t => t.id === 'anthropic');
+
+    const payload = {
+      jira_url:             jira?.extra ?? null,
+      jira_email:           jira?.extra2 ?? null,
+      jira_token:           jira?.token ?? null,
+      asana_token:          asana?.token ?? null,
+      asana_workspace_gid:  asana?.extra ?? null,
+      harvest_token:        harvest?.token ?? null,
+      harvest_account_id:   harvest?.extra ?? null,
+      toggl_token:          toggl?.token ?? null,
+      toggl_workspace_id:   toggl?.extra ?? null,
+      github_token:         github?.token ?? null,
+      github_owner:         github?.extra ?? null,
+      anthropic_key:        anthropic?.token ?? null,
+    };
+
+    try {
+      await fetch('/api/admin/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      console.error('Failed to save config:', e);
+    }
   };
 
   const updateTool = (id: string, field: keyof Tool, value: string | boolean) => {
@@ -173,17 +223,18 @@ export default function AdminPage() {
 
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-              <Settings className="h-6 w-6 text-indigo-600" /> Admin
-            </h1>
-            <p className="text-sm text-slate-500 mt-0.5">Configure your integrations and project categories</p>
-          </div>
-          {saved && (
-            <span className="flex items-center gap-1.5 text-emerald-600 text-sm font-medium">
-              <CheckCircle className="h-4 w-4" /> Saved
-            </span>
-          )}
+  <div>
+    <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+      <Settings className="h-6 w-6 text-indigo-600" /> Admin
+    </h1>
+    <p className="text-sm text-slate-500 mt-0.5">Configure your integrations and project categories</p>
+  </div>
+  <Link
+    href="/"
+    className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 transition-all"
+  >
+    ← Back to Dashboard
+  </Link>
         </div>
 
         {/* Tabs */}
@@ -388,7 +439,7 @@ export default function AdminPage() {
             )}
 
             <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs text-slate-500">
-              <strong>Internal</strong> projects appear in the "Internal Work" tab and feed Ops KPIs.<br />
+              <strong>Internal</strong> projects appear in the &quot;Internal Work&quot; tab and feed Ops KPIs.<br />
               <strong>Delivery</strong> projects appear in the Delivery tab and Client Health.
             </div>
           </div>

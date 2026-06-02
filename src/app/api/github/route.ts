@@ -6,10 +6,11 @@
  */
 
 import { NextResponse } from 'next/server';
+import { getApiConfig } from '@/lib/api';
 
 const GH_BASE = 'https://api.github.com';
-const GH_TOKEN = process.env.GITHUB_TOKEN ?? '';
-const GH_OWNER = process.env.GITHUB_OWNER ?? 'hvaquera';
+let GH_TOKEN = "";
+let GH_OWNER = "hvaquera";
 
 // Default repos if none specified
 const DEFAULT_REPOS = [
@@ -183,8 +184,12 @@ async function analyzeRepo(repo: string) {
 }
 
 export async function GET(request: Request) {
-  if (!GH_TOKEN) {
-    return NextResponse.json({ error: 'GITHUB_TOKEN not configured' }, { status: 500 });
+  const cfg = await getApiConfig();
+  const GH_TOKEN = cfg.githubToken;
+  const GH_OWNER = cfg.githubOwner || 'hvaquera';
+
+  if (!GH_TOKEN || !GH_OWNER) {
+    return NextResponse.json({ repos: [], people: [], totalCommits: 0 });
   }
 
   const { searchParams } = new URL(request.url);
