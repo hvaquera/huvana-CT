@@ -61,11 +61,11 @@ export default function TimeActualsTab() {
 
   const searchLower = search.toLowerCase();
 
-  const filteredPeople: ActualsPerson[] = data?.people.filter(
+  const filteredPeople: ActualsPerson[] = (data?.people ?? []).filter(
     (p) => p.name.toLowerCase().includes(searchLower) || p.projects.some((proj) => proj.projectKey.toLowerCase().includes(searchLower)),
   ) ?? [];
 
-  const filteredProjects: ActualsProjectTotal[] = data?.projects.filter(
+  const filteredProjects: ActualsProjectTotal[] = (data?.projects ?? []).filter(
     (p) => p.projectKey.toLowerCase().includes(searchLower) || p.projectName.toLowerCase().includes(searchLower),
   ) ?? [];
 
