@@ -235,7 +235,7 @@ export default function PeoplePerformanceTab({ issues, timeActuals, githubData }
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="font-bold text-slate-900">People Performance</h2>
+          <h2 className="font-bold text-slate-900 text-lg">People Performance</h2>
           <p className="text-xs text-slate-400 mt-0.5">Tasks · Time · Code · Sentiment — unified view per engineer</p>
         </div>
         <div className="flex gap-1 bg-white border border-slate-200 rounded-lg p-1">

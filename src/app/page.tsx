@@ -1,15 +1,13 @@
 'use client';
 
-import ComplianceTracker from '@/components/dashboard/ComplianceTracker';
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { RefreshCw, Settings, ChevronDown, ChevronUp, X } from 'lucide-react';
+import { RefreshCw, Settings, ChevronDown, ChevronUp, X, LayoutDashboard, Briefcase, Truck, HeartPulse, Users, Clock, BarChart3, FileText } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import LoadingProgress from '@/components/dashboard/LoadingProgress';
 import OverdueBlock from '@/components/dashboard/OverdueBlock';
 import UpcomingWork from '@/components/dashboard/UpcomingWork';
 import TaskSearch from '@/components/dashboard/TaskSearch';
 import TaskCard from '@/components/dashboard/TaskCard';
-import OpsDetails from '@/components/dashboard/OpsDetails';
 import TimeActualsTab from '@/components/dashboard/TimeActualsTab';
 import KPIsTab from '@/components/dashboard/KPIsTab';
 import ReportsTab from '@/components/dashboard/ReportsTab';
@@ -17,9 +15,9 @@ import ClientHealthTab from '@/components/dashboard/ClientHealthTab';
 import PeoplePerformanceTab from '@/components/dashboard/PeoplePerformanceTab';
 import AICopilot from '@/components/dashboard/AICopilot';
 import { REFRESH_INTERVAL_MS, categorizeStatus, STATUS_SORT_ORDER } from '@/lib/constants';
-import type { JiraIssue, EpicProgress } from '@/types';
+import type { JiraIssue } from '@/types';
 
-type TabValue = 'all' | 'compliance' | 'ops' | 'delivery' | 'health' | 'people' | 'actuals' | 'kpis' | 'reports' ;
+type TabValue = 'all' | 'compliance' | 'ops' | 'delivery' | 'health' | 'people' | 'actuals' | 'kpis' | 'reports';
 
 function getProjectCategories() {
   if (typeof window === 'undefined') return { ops: [] as string[], delivery: [] as string[] };
@@ -83,9 +81,8 @@ export default function Dashboard() {
     try {
       const timeTool = localStorage.getItem('ct_time_tool') ?? process.env.NEXT_PUBLIC_TIME_TOOL ?? 'tempo';
       const endpoints: Record<string, string> = { tempo: '/api/tempo/actuals', toggl: '/api/toggl/actuals', harvest: '/api/harvest/actuals' };
-      const endpoint = endpoints[timeTool] ?? '/api/tempo/actuals';
       const now = new Date();
-      const res = await fetch(`${endpoint}?year=${now.getFullYear()}&month=${now.getMonth() + 1}`);
+      const res = await fetch(`${endpoints[timeTool] ?? '/api/tempo/actuals'}?year=${now.getFullYear()}&month=${now.getMonth() + 1}`);
       if (res.ok) setTimeActuals(await res.json());
     } catch {}
   }, []);
@@ -144,19 +141,6 @@ export default function Dashboard() {
       return (a.fields.duedate ? new Date(a.fields.duedate).getTime() : Infinity) - (b.fields.duedate ? new Date(b.fields.duedate).getTime() : Infinity);
     }), [filteredIssues]);
 
-  const epicProgress = useMemo(() => {
-    const progress: Record<string, EpicProgress> = {};
-    filteredIssues.forEach(issue => {
-      if (issue.fields.parent) {
-        const k = issue.fields.parent.key;
-        if (!progress[k]) progress[k] = { name: issue.fields.parent.fields.summary, total: 0, done: 0, projectKey: issue.fields.project.key };
-        progress[k].total++;
-        if (categorizeStatus(issue.fields.status.name) === 'done') progress[k].done++;
-      }
-    });
-    return progress;
-  }, [filteredIssues]);
-
   const staleTasks = useMemo(() => filteredIssues.filter(i => {
     if (categorizeStatus(i.fields.status.name) !== 'inProgress' || !i.fields.updated || i.fields.assignee?.active === false || i.fields.issuetype?.name?.toLowerCase() === 'epic') return false;
     const daysSince = Math.floor((Date.now() - new Date(i.fields.updated).getTime()) / 86400000);
@@ -170,7 +154,7 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--muted)' }}>
         <LoadingProgress
           steps={['Connecting to Jira...', 'Connecting to Asana...', 'Fetching time data...', 'Building dashboard...']}
           intervalMs={1800}
@@ -182,109 +166,150 @@ export default function Dashboard() {
 
   const isTaskTab = ['all', 'ops', 'delivery'].includes(filter);
 
-  return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="max-w-5xl mx-auto px-3 py-4 md:px-8 md:py-8">
+  const tabs = [
+    { value: 'all', label: 'All', icon: LayoutDashboard },
+    { value: 'ops', label: 'Internal Work', icon: Briefcase },
+    { value: 'delivery', label: 'Delivery Work', icon: Truck },
+    { value: 'health', label: 'Projects Health', icon: HeartPulse },
+    { value: 'people', label: 'People', icon: Users },
+    { value: 'actuals', label: 'Time Actuals', icon: Clock },
+    { value: 'kpis', label: 'KPIs', icon: BarChart3 },
+    { value: 'reports', label: 'Reports', icon: FileText },
+  ];
 
-        {/* Header */}
-        <div className="flex items-center justify-between mb-4 md:mb-6">
-          <div>
-            <h1 className="text-xl md:text-3xl font-bold text-slate-900">Control Tower</h1>
-            <div className="flex items-center gap-2 mt-0.5">
-              <p className="text-xs md:text-sm text-slate-400">Delivery Intelligence Platform</p>
+  return (
+    <div className="min-h-screen" style={{ background: 'var(--muted)' }}>
+
+      {/* ── Top bar ─────────────────────────────────────────── */}
+      <header style={{ background: 'var(--navy)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-13 flex items-center justify-between" style={{ height: 52 }}>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-8 h-8 rounded-lg" style={{ background: 'var(--indigo)' }}>
+              <LayoutDashboard className="h-4 w-4 text-white" />
+            </div>
+            <div>
+              <span className="text-white font-medium text-[15px] leading-none">Control Tower</span>
+              <span className="text-slate-500 text-[11px] ml-2">Delivery Intelligence</span>
+            </div>
+            <div className="hidden sm:flex items-center gap-1.5 ml-2">
               {sourceCounts.jira > 0 && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">Jira {sourceCounts.jira}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold" style={{ background: 'rgba(99,102,241,0.2)', color: '#a5b4fc' }}>
+                  Jira {sourceCounts.jira}
+                </span>
               )}
               {sourceCounts.asana > 0 && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium">Asana {sourceCounts.asana}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold" style={{ background: 'rgba(139,92,246,0.2)', color: '#c4b5fd' }}>
+                  Asana {sourceCounts.asana}
+                </span>
               )}
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] md:text-xs text-slate-400 hidden sm:block">{lastRefresh.toLocaleTimeString()}</span>
-            <button onClick={() => { fetchIssues(true); setLastRefresh(new Date()); }} disabled={isRefreshing} className="p-2 rounded-lg hover:bg-slate-200 transition-colors disabled:opacity-50">
-              <RefreshCw className={`h-4 w-4 text-slate-500 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span className="text-[11px] hidden sm:block px-2.5 py-1 rounded-md" style={{ background: 'rgba(255,255,255,0.05)', color: '#64748b', border: '0.5px solid rgba(255,255,255,0.08)' }}>
+              {lastRefresh.toLocaleTimeString()}
+            </span>
+            <button
+              onClick={() => { fetchIssues(true); setLastRefresh(new Date()); }}
+              disabled={isRefreshing}
+              className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors disabled:opacity-40"
+              style={{ color: '#64748b' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
             </button>
-            <a href="/admin" className="p-2 rounded-lg hover:bg-slate-200 transition-colors">
-              <Settings className="h-4 w-4 text-slate-500" />
+            <a
+              href="/admin"
+              className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors"
+              style={{ color: '#64748b' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              <Settings className="h-4 w-4" />
             </a>
           </div>
         </div>
+      </header>
 
-        {/* Tabs */}
-        <div className="mb-4 md:mb-6">
+      {/* ── Tab bar ─────────────────────────────────────────── */}
+      <div className="bg-white" style={{ borderBottom: '0.5px solid var(--border)' }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <Tabs value={filter} onValueChange={(v) => { setFilter(v as TabValue); setSelectedDeliveryProject('all'); }}>
-            <TabsList className="w-full justify-start overflow-x-auto flex-nowrap">
-              <TabsTrigger value="all">All</TabsTrigger>
-              <TabsTrigger value="ops">Operations</TabsTrigger>
-              <TabsTrigger value="delivery">Delivery</TabsTrigger>
-              <TabsTrigger value="health" className="bg-emerald-600 text-white data-[state=active]:bg-emerald-700 data-[state=active]:text-white">
-                Client Health
-              </TabsTrigger>
-              <TabsTrigger value="people" className="bg-blue-600 text-white data-[state=active]:bg-blue-700 data-[state=active]:text-white">
-                People
-              </TabsTrigger>
-              <TabsTrigger value="actuals" className="bg-indigo-600 text-white data-[state=active]:bg-indigo-700 data-[state=active]:text-white">
-                Time Actuals
-              </TabsTrigger>
-              <TabsTrigger value="kpis" className="bg-violet-600 text-white data-[state=active]:bg-violet-700 data-[state=active]:text-white">
-                KPIs
-              </TabsTrigger>
-              <TabsTrigger value="reports" className="bg-amber-600 text-white data-[state=active]:bg-amber-700 data-[state=active]:text-white">
-                Reports
-              </TabsTrigger>
-              <TabsTrigger value="compliance" className="bg-rose-600 text-white data-[state=active]:bg-rose-700 data-[state=active]:text-white">
-                Requerimientos
-              </TabsTrigger>
+            <TabsList className="flex-nowrap">
+              {tabs.map(tab => (
+                <TabsTrigger key={tab.value} value={tab.value} className="gap-1.5">
+                  <tab.icon className="h-3.5 w-3.5" />
+                  {tab.label}
+                  {tab.badge && tab.badge > 0 && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'var(--red-light)', color: 'var(--red)' }}>
+                      {tab.badge}
+                    </span>
+                  )}
+                </TabsTrigger>
+              ))}
             </TabsList>
           </Tabs>
-
-          {filter === 'delivery' && deliveryProjects.length > 1 && (
-            <div className="mt-3 flex items-center gap-2">
-              <span className="text-xs text-slate-500">Project:</span>
-              <div className="flex flex-wrap gap-1.5">
-                <button onClick={() => setSelectedDeliveryProject('all')} className={`text-xs px-2.5 py-1 rounded-full border transition-all ${selectedDeliveryProject === 'all' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'}`}>
-                  All Projects
-                </button>
-                {deliveryProjects.map(p => (
-                  <button key={p.key} onClick={() => setSelectedDeliveryProject(p.key)} className={`text-xs px-2.5 py-1 rounded-full border transition-all ${selectedDeliveryProject === p.key ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'}`}>
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
+      </div>
 
-        {/* Tab content */}
+      {/* ── Delivery project picker ──────────────────────────── */}
+      {filter === 'delivery' && deliveryProjects.length > 1 && (
+        <div className="bg-white border-b" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2 flex items-center gap-2">
+            <span className="section-label">Project:</span>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => setSelectedDeliveryProject('all')}
+                className={`text-[11px] px-2.5 py-1 rounded-full border transition-all font-medium ${selectedDeliveryProject === 'all' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'}`}
+              >
+                All Projects
+              </button>
+              {deliveryProjects.map(p => (
+                <button
+                  key={p.key}
+                  onClick={() => setSelectedDeliveryProject(p.key)}
+                  className={`text-[11px] px-2.5 py-1 rounded-full border transition-all font-medium ${selectedDeliveryProject === p.key ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'}`}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Main content ─────────────────────────────────────── */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-5">
+
+        {/* Specialised tabs */}
         {filter === 'health' && <ClientHealthTab issues={issues} />}
         {filter === 'people' && <PeoplePerformanceTab issues={issues} timeActuals={timeActuals} githubData={githubData} />}
         {filter === 'actuals' && <TimeActualsTab />}
         {filter === 'kpis' && <KPIsTab jiraIssues={issues} />}
         {filter === 'reports' && <ReportsTab jiraIssues={issues} deliveryIssues={[]} />}
-        {filter === 'compliance' && <ComplianceTracker />}
 
+        {/* Task tabs */}
         {isTaskTab && (
           <div className="space-y-4">
             <OverdueBlock tasks={overdueTasks} showArea={true} />
 
             {staleTasks.length > 0 && !staleDismissed && (
-              <div className="rounded-xl bg-amber-50/70 border border-amber-200 px-3 py-2.5 md:px-4 md:py-3">
+              <div className="rounded-xl border px-4 py-3" style={{ background: '#fffbeb', borderColor: '#fde68a' }}>
                 <div className="flex items-center gap-2">
                   <button onClick={() => setStaleExpanded(!staleExpanded)} className="flex items-center gap-2 flex-1 text-left">
-                    <span className="text-amber-500 text-sm font-bold">⚠</span>
-                    <span className="text-xs font-semibold text-amber-700">
-                      {staleTasks.length} &quot;In Progress&quot; task{staleTasks.length !== 1 ? 's' : ''} with no updates in 3+ days
+                    <span className="text-[13px] font-semibold" style={{ color: '#92400e' }}>
+                      ⚠ {staleTasks.length} task{staleTasks.length !== 1 ? 's' : ''} with no updates in 3+ days
                     </span>
-                    {staleExpanded ? <ChevronUp className="h-3.5 w-3.5 text-amber-400" /> : <ChevronDown className="h-3.5 w-3.5 text-amber-400" />}
+                    {staleExpanded ? <ChevronUp className="h-3.5 w-3.5 text-amber-500" /> : <ChevronDown className="h-3.5 w-3.5 text-amber-500" />}
                   </button>
                   <button onClick={() => setStaleDismissed(true)} className="text-amber-400 hover:text-amber-600 p-0.5">
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
                 {staleExpanded && (
-                  <div className="mt-2.5 pt-2.5 border-t border-amber-200/50 space-y-1.5">
-                    {staleTasks.sort((a, b) => (a.fields.updated ? new Date(a.fields.updated).getTime() : 0) - (b.fields.updated ? new Date(b.fields.updated).getTime() : 0))
+                  <div className="mt-2.5 pt-2.5 space-y-1.5" style={{ borderTop: '0.5px solid rgba(245,158,11,0.3)' }}>
+                    {staleTasks
+                      .sort((a, b) => (a.fields.updated ? new Date(a.fields.updated).getTime() : 0) - (b.fields.updated ? new Date(b.fields.updated).getTime() : 0))
                       .map(task => <TaskCard key={task.key} issue={task} showArea={true} compact />)}
                   </div>
                 )}
@@ -294,14 +319,12 @@ export default function Dashboard() {
             <UpcomingWork issues={filteredIssues} showArea={true} />
 
             <div>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Find Tasks</h2>
+              <p className="section-label mb-2">Find Tasks</p>
               <TaskSearch tasks={allActiveTasks} showArea={true} activeFilter={filter} />
             </div>
-
-            <OpsDetails issues={issues} filteredIssues={filteredIssues} epicProgress={epicProgress} />
           </div>
         )}
-      </div>
+      </main>
 
       <AICopilot tasks={issues} timeActuals={timeActuals} githubData={githubData} />
     </div>

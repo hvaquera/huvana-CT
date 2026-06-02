@@ -7,7 +7,7 @@ import { categorizeStatus, AREA_MAP } from '@/lib/constants';
 import LoadingProgress from './LoadingProgress';
 import type { JiraIssue, ActualsResponse } from '@/types';
 
-const JIRA_BROWSE_URL = 'https://verybigthings.atlassian.net/browse';
+
 
 interface KPIsTabProps {
   jiraIssues: JiraIssue[];
@@ -421,7 +421,7 @@ export default function KPIsTab({ jiraIssues }: KPIsTabProps) {
 
   useEffect(() => { fetchTempo(); }, [fetchTempo]);
 
-  const areas = ['Legal', 'Finance', 'GTM & Sales', 'Operations'];
+  const areas = [...new Set(jiraIssues.map(i => i.fields.project.name))].filter(Boolean).slice(0, 8);
 
   const areaKPIs = useMemo(() => {
     if (!jiraIssues.length) return [];

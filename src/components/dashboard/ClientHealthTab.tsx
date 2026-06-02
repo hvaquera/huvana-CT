@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle, TrendingUp, TrendingDown, Clock, Zap } from 'lucide-react';
 import { categorizeStatus } from '@/lib/constants';
 import type { JiraIssue } from '@/types';
@@ -90,7 +90,28 @@ const riskConfig = {
 };
 
 export default function ClientHealthTab({ issues }: ClientHealthTabProps) {
-  const clients = useMemo(() => computeHealth(issues), [issues]);
+  const [view, setView] = useState<'all' | 'internal' | 'delivery'>('all');
+
+  // Read project categories from localStorage
+  const projectCategories = useMemo(() => {
+    if (typeof window === 'undefined') return new Map<string, string>();
+    try {
+      const saved = localStorage.getItem('ct_detected_projects');
+      if (!saved) return new Map<string, string>();
+      const projects = JSON.parse(saved) as { key: string; type: string }[];
+      return new Map(projects.map(p => [p.key, p.type]));
+    } catch { return new Map<string, string>(); }
+  }, []);
+
+  const filteredIssues = useMemo(() => {
+    if (view === 'all') return issues;
+    return issues.filter(i => {
+      const type = projectCategories.get(i.fields.project.key) ?? 'delivery';
+      return type === view;
+    });
+  }, [issues, view, projectCategories]);
+
+  const clients = useMemo(() => computeHealth(filteredIssues), [filteredIssues]);
 
   const overallScore = clients.length > 0
     ? Math.round(clients.reduce((s, c) => s + c.score, 0) / clients.length)
@@ -102,12 +123,25 @@ export default function ClientHealthTab({ issues }: ClientHealthTabProps) {
 
   return (
     <div className="space-y-4">
-
+      {/* Filter */}
+      <div className="flex gap-1 bg-white border border-slate-200 rounded-xl p-1 w-fit">
+        {([['all', 'All Projects'], ['internal', '⚙️ Internal'], ['delivery', '🚀 Delivery']] as const).map(([val, label]) => (
+          <button
+            key={val}
+            onClick={() => setView(val)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+              view === val ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {/* Overall score */}
-      <div className="bg-slate-900 rounded-xl p-5 text-white">
+      <div className="rounded-xl p-5 text-white">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="font-bold text-lg">Portfolio Health</h2>
+          <h2 className="font-bold text-slate-900 text-lg">Portfolio Health</h2>
             <p className="text-slate-400 text-xs mt-0.5">Across {clients.length} active client projects</p>
           </div>
           <div className="text-right">

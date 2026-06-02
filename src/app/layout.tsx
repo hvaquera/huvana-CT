@@ -7,8 +7,8 @@ const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] });
 const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'VBT Control Tower',
-  description: 'Real-time operations dashboard — Jira issues, Tempo time tracking, and team analytics.',
+  title: 'Control Tower',
+  description: 'Delivery Intelligence Platform',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

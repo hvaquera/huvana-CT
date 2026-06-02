@@ -60,7 +60,7 @@ export default function AICopilot({ tasks, timeActuals, githubData }: AICopilotP
       const res = await fetch('/api/ai/insights', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tasks, timeActuals, githubData, context: { company: 'Simpat Tech' } }),
+        body: JSON.stringify({ tasks, timeActuals, githubData, context: { company: 'Simpat Tech', complianceRequirements: [ { tipo: 'SAT', descripcion: 'Declaración anual complementaria', diasRestantes: -5, status: 'vencido', responsable: 'Lic. García' }, { tipo: 'Municipio', descripcion: 'Permiso instalación espectacular Av. Constitución', diasRestantes: 3, status: 'rojo', responsable: 'Ing. Martínez' }, { tipo: 'SAT', descripcion: 'Revisión CFDI 2024', diasRestantes: 8, status: 'amarillo', responsable: 'Lic. García' }, { tipo: 'Cliente', descripcion: 'Reporte campaña Q1 Bimbo', diasRestantes: 15, status: 'verde', responsable: 'Daniela Romo' } ] } }),
       });
       if (!res.ok) throw new Error('Failed');
       const data = await res.json();
@@ -111,7 +111,7 @@ export default function AICopilot({ tasks, timeActuals, githubData }: AICopilotP
     <>
       <button
         onClick={() => setIsOpen(true)}
-        className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-full shadow-lg transition-all bg-slate-900 text-white hover:bg-slate-700 ${
+        className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-full shadow-lg transition-all bg-[var(--navy)] text-white hover:opacity-90 ${
           isOpen ? 'opacity-0 pointer-events-none' : 'opacity-100'
         }`}
       >
@@ -129,7 +129,7 @@ export default function AICopilot({ tasks, timeActuals, githubData }: AICopilotP
       }`}>
 
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-900 sm:rounded-t-2xl">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-[var(--navy)] sm:rounded-t-2xl">
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-violet-400" />
             <span className="font-semibold text-white text-sm">AI Co-Pilot</span>
@@ -265,7 +265,7 @@ export default function AICopilot({ tasks, timeActuals, githubData }: AICopilotP
               )}
               <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-xs leading-relaxed ${
                 msg.role === 'user'
-                  ? 'bg-slate-900 text-white rounded-tr-sm'
+                  ? 'bg-[var(--navy)] text-white rounded-tr-sm'
                   : 'bg-slate-100 text-slate-800 rounded-tl-sm'
               }`}>
                 {msg.content}

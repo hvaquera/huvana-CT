@@ -65,8 +65,8 @@ Create a `.env.local` file in the project root:
 
 ```env
 # Jira API
-JIRA_BASE_URL=https://verybigthings.atlassian.net
-JIRA_EMAIL=your-email@verybigthings.com
+JIRA_BASE_URL=you-jira-repo
+JIRA_EMAIL=your-email@domain.com
 JIRA_API_TOKEN=your-jira-api-token
 
 # Tempo API
