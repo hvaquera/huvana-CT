@@ -6,6 +6,7 @@
  */
 
 import { NextResponse } from 'next/server';
+import { getApiConfig } from '@/lib/api';
 
 export async function POST(request: Request) {
   const body = await request.json();
@@ -78,7 +79,7 @@ INSTRUCTIONS:
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '', 'anthropic-version': '2023-06-01' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': (await getApiConfig()).anthropicKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
@@ -95,7 +96,7 @@ INSTRUCTIONS:
   } catch (error) {
     console.error('[AI Chat] Error:', error);
     return NextResponse.json({
-      reply: 'I\'m having trouble connecting right now. Please check your ANTHROPIC_API_KEY and try again.',
+      reply: 'I\'m having trouble connecting right now. Please add your Anthropic API key in Admin → Integrations.',
     });
   }
 }

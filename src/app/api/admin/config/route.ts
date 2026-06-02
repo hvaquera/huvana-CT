@@ -24,7 +24,15 @@ export async function POST(request: Request) {
     const { invalidateConfig } = await import('@/lib/config');
     invalidateConfig();
 
-    return NextResponse.json({ ok: true });
+    const response = NextResponse.json({ ok: true });
+    // Mark workspace as configured so middleware allows access to dashboard
+    response.cookies.set('ct_configured', '1', {
+      path: '/',
+      maxAge: 60 * 60 * 24 * 365, // 1 year
+      httpOnly: false,
+      sameSite: 'lax',
+    });
+    return response;
   } catch (err) {
     console.error('[Admin config] Error:', err);
     return NextResponse.json({ error: String(err) }, { status: 500 });

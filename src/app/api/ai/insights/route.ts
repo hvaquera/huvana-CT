@@ -6,6 +6,7 @@
  */
 
 import { NextResponse } from 'next/server';
+import { getApiConfig } from '@/lib/api';
 
 export async function POST(request: Request) {
   const body = await request.json();
@@ -91,7 +92,7 @@ Only return the JSON array, no other text.`;
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '', 'anthropic-version': '2023-06-01' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': (await getApiConfig()).anthropicKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
@@ -118,7 +119,7 @@ Only return the JSON array, no other text.`;
           title: 'AI insights temporarily unavailable',
           message: 'Unable to generate insights right now. Dashboard data is still live.',
           metric: null,
-          action: 'Check ANTHROPIC_API_KEY in .env.local',
+          action: 'Add your Anthropic API key in Admin → Integrations',
         },
       ],
     });
